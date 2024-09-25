@@ -12,3 +12,4 @@ D:\SystemDesign\LLD\StrategyPattern\obj\Debug\net8.0\refint\StrategyPattern.dll
 D:\SystemDesign\LLD\StrategyPattern\obj\Debug\net8.0\StrategyPattern.pdb
 D:\SystemDesign\LLD\StrategyPattern\obj\Debug\net8.0\StrategyPattern.genruntimeconfig.cache
 D:\SystemDesign\LLD\StrategyPattern\obj\Debug\net8.0\ref\StrategyPattern.dll
+D:\SystemDesign\LLD\StrategyPattern\obj\Debug\net8.0\StrategyPattern.sourcelink.json

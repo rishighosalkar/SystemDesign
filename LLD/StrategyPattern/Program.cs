@@ -1,5 +1,5 @@
 ﻿using StrategyPattern.Vehicles;
 
-Suv suvObj = new Suv();
+Vehicle vehObj = new Suv();
 
-suvObj.Drive();
+vehObj.Drive();
