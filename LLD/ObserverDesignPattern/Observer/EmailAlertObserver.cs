@@ -15,6 +15,6 @@ public class EmailAlertObserver : INotificationAlert
 
     public void UpdateSubscribers()
     {
-        Console.WriteLine("email sent to " + email + "stock is" + _observable.GetData());
+        Console.WriteLine("email sent to " + email + "stock is " + _observable.GetData());
     }
 }
