@@ -1,0 +1,15 @@
+D:\SystemDesign\LLD\TicTacToeLLD\bin\Debug\net8.0\TicTacToeLLD.exe
+D:\SystemDesign\LLD\TicTacToeLLD\bin\Debug\net8.0\TicTacToeLLD.deps.json
+D:\SystemDesign\LLD\TicTacToeLLD\bin\Debug\net8.0\TicTacToeLLD.runtimeconfig.json
+D:\SystemDesign\LLD\TicTacToeLLD\bin\Debug\net8.0\TicTacToeLLD.dll
+D:\SystemDesign\LLD\TicTacToeLLD\bin\Debug\net8.0\TicTacToeLLD.pdb
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.GeneratedMSBuildEditorConfig.editorconfig
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.AssemblyInfoInputs.cache
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.AssemblyInfo.cs
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.csproj.CoreCompileInputs.cache
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.sourcelink.json
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.dll
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\refint\TicTacToeLLD.dll
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.pdb
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\TicTacToeLLD.genruntimeconfig.cache
+D:\SystemDesign\LLD\TicTacToeLLD\obj\Debug\net8.0\ref\TicTacToeLLD.dll
