@@ -1,0 +1,6 @@
+@ParkingLotLLD_HostAddress = http://localhost:5163
+
+GET {{ParkingLotLLD_HostAddress}}/
+Accept: application/json
+
+###
