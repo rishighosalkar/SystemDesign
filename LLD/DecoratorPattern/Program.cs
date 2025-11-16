@@ -1,12 +1,14 @@
-﻿// See https://aka.ms/new-console-template for more information
+﻿
+using DecoratorPattern.Core;
+using DecoratorPattern.Decorators;
+using DecoratorPattern.NotificationCore;
+using DecoratorPattern.NotificationDecorators;
 
-using DecoratorPattern.Pizza;
-using DecoratorPattern.Toppings;
+IDataStream dataStream = new EncryptDecorator(new CachingDecorator(new FileDataStream()));
 
-BasePizza basePizza = new ExtraCheese(new Margherita());
+dataStream.Write("abcdefghisasasx");
 
-BasePizza basePizza1 = new Mushroom(basePizza);
+//
+INotification notification = new SMSNotification(new SlackNotification(new EmailNotification()));
 
-Console.WriteLine("Final pizza prize is: {0}", basePizza.Cost());
-
-Console.WriteLine("Final pizza prize with mushroom toppings: {0}", basePizza1.Cost());
+notification.Notify("You've completed decorator pattern");

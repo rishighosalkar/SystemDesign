@@ -3,6 +3,8 @@ LLD/.vs
 LLD/BoardGame/.vs
 LLD/DecoratorPattern/.vs
 LLD/ElevatorSystemLLD/.vs
+LLD/FactoryAndAbstractFactoryDesignPattern/.vs
+LLD/ObserverDesignPattern/.vs
 LLD/ParkingLotLLD/.vs
 LLD/TicTacToeLLD/.vs
 LLD/StrategyPattern/.vs
