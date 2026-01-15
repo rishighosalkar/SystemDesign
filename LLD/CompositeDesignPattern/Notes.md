@@ -98,29 +98,29 @@ The client does not need to know whether it is working with a file or a director
 
 When to Use
 Use the Composite Pattern when:
--You are dealing with hierarchical (tree-like) data
--You want to represent part–whole relationships
--You want to avoid conditional logic based on object types
+*You are dealing with hierarchical (tree-like) data
+*You want to represent part–whole relationships
+*You want to avoid conditional logic based on object types
 
 Real-World Examples
 
--File System → File & Folder
--UI Components → Button, Panel, Window
--Organization Hierarchy → Employee, Manager
--Menu Systems → MenuItem, Menu
+*File System → File & Folder
+*UI Components → Button, Panel, Window
+*Organization Hierarchy → Employee, Manager
+*Menu Systems → MenuItem, Menu
 
 Advantages
 
--Simplifies client code
--Promotes polymorphism
--Supports Open/Closed Principle
--Makes recursive operations easy
+*Simplifies client code
+*Promotes polymorphism
+*Supports Open/Closed Principle
+*Makes recursive operations easy
 
 Disadvantages
 
--Hard to restrict what components a composite can contain
--Leaf classes may need to implement unsupported operations
--Can lead to overly generic designs
+*Hard to restrict what components a composite can contain
+*Leaf classes may need to implement unsupported operations
+*Can lead to overly generic designs
 
 One-Line Interview Answer
 >The Composite Design Pattern allows clients to treat individual objects and compositions of objects uniformly by using a common interface, making it ideal for tree-structured systems.
