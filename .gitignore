@@ -12,3 +12,6 @@ LLD/ChainOfResponsibilityDesignPattern/.vs
 LLD/AdapterDesignPattern/.vs
 LLD/CompositeDesignPattern/.vs
 LLD/FacadeDesignPattern/.vs
+LLD/StateDesignPattern/.vs
+LLD/FlyweightDesignPattern/.vs
+LLD/CommandDesignPattern/.vs
