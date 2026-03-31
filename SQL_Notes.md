@@ -29,37 +29,53 @@
 
 ## 2. Covering Index
 
-### What
-An index containing **all columns** a query needs — engine never touches the base table.
+### What Is a Covering Index?
+A covering index is a non-clustered index that contains **all the columns** a query needs — the query engine can satisfy the entire query from the index alone without ever going back to the base table. The execution plan shows this as an **"Index Seek"** (or scan) with no Key Lookup.
+
+Think of it like a textbook's index that not only tells you the page number but also includes the actual answer — you never need to flip to the page.
+
+### Why It Helps
+Without a covering index, a non-clustered index seek finds the matching rows but only has the indexed columns. For any other column in your `SELECT`, SQL Server must perform a **Key Lookup** — it takes the clustered key (or RID) from the non-clustered index leaf and goes back to the clustered index (or heap) to fetch the remaining columns. This is essentially a second random I/O **per row**.
+
+- 10 matching rows = 10 Key Lookups = 10 random I/Os
+- 10,000 matching rows = 10,000 Key Lookups → optimizer may give up and do a full table scan instead
+
+A covering index eliminates all of this by storing the extra columns right in the index leaf pages.
+
+**Performance impact:**
+- Eliminates Key Lookups (the single biggest perf win for selective queries)
+- Reduces I/O dramatically — one structure instead of two
+- Reduces lock contention — fewer pages touched = fewer locks acquired
+- Can turn a slow query into a sub-millisecond query
 
 ### How It Works
 
 ```sql
+-- Query we want to optimize:
+SELECT OrderDate, TotalAmount FROM Orders WHERE CustomerId = 42
+
 -- Without covering index (index on CustomerId only):
--- Step 1: Index Seek on CustomerId = 42 → gets clustered key
--- Step 2: Key Lookup into clustered index → fetches remaining columns (EXPENSIVE)
+-- Step 1: Index Seek on CustomerId = 42 → gets clustered key (OrderId)
+-- Step 2: Key Lookup into clustered index using OrderId → fetches OrderDate, TotalAmount
+-- Problem: Step 2 happens PER ROW — expensive at scale
 
 -- With covering index:
 CREATE NONCLUSTERED INDEX IX_Orders_Customer 
 ON Orders(CustomerId) 
 INCLUDE (OrderDate, TotalAmount)
 
--- Step 1: Index Seek → leaf page already has OrderDate, TotalAmount
--- Step 2: NONE — query fully satisfied from index
+-- Step 1: Index Seek on CustomerId = 42 → leaf page already has OrderDate, TotalAmount
+-- Step 2: NONE — query fully satisfied from index ✅
+-- Execution plan shows: "Index Seek" only, no Key Lookup
 ```
 
-`INCLUDE` columns are stored **only at leaf level**, not in intermediate B-tree nodes.
+`INCLUDE` columns are stored **only at leaf level**, not in intermediate B-tree nodes. This means they don't increase the B-tree depth (keeping seeks fast) but are available when the engine reads the leaf page.
 
 ### When to Use
-- Key Lookup in execution plan consuming significant cost
-- High-frequency queries selecting same columns repeatedly
-- Read-heavy OLTP workloads
+- Execution plan shows a **Key Lookup** consuming significant cost (often 90%+ of query cost)
+- High-frequency queries selecting the same columns repeatedly
+- Read-heavy OLTP workloads where every millisecond matters
 - Queries returning few rows but needing columns not in the index
-
-### Why
-- Eliminates Key Lookups (biggest perf win for selective queries)
-- Reduces I/O dramatically
-- Reduces lock contention (fewer pages = fewer locks)
 
 ### Rules for Creating
 
@@ -156,12 +172,77 @@ Design the index for the queries you actually run.
 
 ## 5. Index Seek, Index Scan, Table Scan, Key Lookup
 
-| Operation | What It Does | Performance |
-|---|---|---|
-| **Table Scan** | Reads EVERY row in the table (heap) | O(n) — worst |
-| **Index Scan** | Reads EVERY leaf page of an index | Better than table scan if index is narrower |
-| **Index Seek** | Navigates B-tree directly to matching rows | O(log n) — best |
-| **Key Lookup** | After non-clustered seek, goes back to clustered index for missing columns | Expensive at scale |
+### Table Scan — O(n), worst
+Reads **every single row** in the table from start to finish. Happens when there's no useful index, or the query returns most of the table anyway.
+
+```sql
+-- Orders table has NO index on Status
+SELECT * FROM Orders WHERE Status = 'Shipped'
+-- Execution plan: Table Scan
+-- SQL Server reads all 1M rows to find the ones with Status = 'Shipped'
+```
+
+Also called **Clustered Index Scan** if the table has a clustered index (since the table IS the clustered index).
+
+### Index Scan — O(n) on index, better than table scan
+Reads **every leaf page** of a non-clustered index. Faster than a table scan only because the index is narrower (fewer columns = fewer pages to read).
+
+```sql
+-- Index exists on CustomerId, but query has no WHERE filter
+SELECT CustomerId FROM Orders ORDER BY CustomerId
+-- Execution plan: Index Scan on IX_Orders_CustomerId
+-- Reads all leaf pages of the index (much smaller than full table)
+-- Still O(n) but on a smaller structure
+```
+
+Also happens when the `WHERE` clause exists but isn't **sargable**:
+```sql
+-- Index on OrderDate, but function on column prevents seek
+SELECT * FROM Orders WHERE YEAR(OrderDate) = 2024
+-- Execution plan: Index Scan (not seek!) — must evaluate YEAR() on every row
+```
+
+### Index Seek — O(log n), best
+Navigates the **B-tree** from root → intermediate → leaf to land directly on matching rows. Only reads the pages it needs.
+
+```sql
+-- Index on CustomerId
+SELECT * FROM Orders WHERE CustomerId = 42
+-- Execution plan: Index Seek on IX_Orders_CustomerId
+-- B-tree depth ~3 levels for millions of rows → reads ~3 pages to find the match
+-- Then Key Lookup for remaining columns (unless covering index)
+```
+
+Range seeks also use the B-tree:
+```sql
+-- Clustered index on OrderDate
+SELECT * FROM Orders WHERE OrderDate BETWEEN '2024-01-01' AND '2024-01-31'
+-- Execution plan: Clustered Index Seek
+-- Seeks to '2024-01-01' in B-tree, then reads sequentially until '2024-01-31'
+```
+
+### Key Lookup — expensive at scale
+After a non-clustered index seek finds matching rows, SQL Server only has the indexed columns. For any other column in the query, it must go **back to the clustered index** (or heap) to fetch them — one lookup per row.
+
+```sql
+-- Non-clustered index on CustomerId (only)
+SELECT OrderDate, TotalAmount FROM Orders WHERE CustomerId = 42
+-- Execution plan:
+--   1. Index Seek on IX_CustomerId → finds 50 matching rows (has CustomerId + clustered key)
+--   2. Key Lookup × 50 → goes to clustered index 50 times to get OrderDate, TotalAmount
+-- The 50 Key Lookups often cost MORE than the seek itself
+```
+
+**Fix:** Create a covering index to eliminate the Key Lookup entirely (see Section 2).
+
+### Summary
+
+| Operation | What It Does | Performance | When It Happens |
+|---|---|---|---|
+| **Table Scan** | Reads every row in the table | O(n) — worst | No useful index, or query needs most rows |
+| **Index Scan** | Reads every leaf page of an index | O(n) on smaller structure | Index exists but can't seek (non-sargable, no filter) |
+| **Index Seek** | B-tree navigation to matching rows | O(log n) — best | Sargable WHERE on indexed column |
+| **Key Lookup** | Fetches missing columns from clustered index | O(k) per row — adds up fast | Non-clustered seek + SELECT has non-indexed columns |
 
 **Ranking**: Index Seek > Index Scan > Table Scan
 
@@ -171,51 +252,187 @@ Key Lookups are what covering indexes eliminate.
 
 ## 6. Fragmentation
 
+### What Is Fragmentation?
+Fragmentation is when index pages become inefficiently organized — either pages have wasted empty space, or pages are stored out of logical order on disk. This forces SQL Server to do more I/O to read the same amount of data.
+
+Think of it like a book where pages are either half-empty (internal) or shuffled out of order (external).
+
 ### Internal Fragmentation
-- Pages not fully filled — wasted space within pages
-- Caused by: variable-length updates, deletes leaving gaps
-- Result: more pages read for same data
+- Pages not fully filled — wasted space **within** pages
+- A page is 8KB in SQL Server. If a page is only 40% full, 60% is wasted.
+
+**How it's caused:**
+- `DELETE` statements remove rows, leaving gaps in pages that aren't automatically reclaimed
+- `UPDATE` on variable-length columns (`VARCHAR`, `NVARCHAR`) — if the new value is smaller, the row shrinks and leaves a gap; if larger, the row may move entirely, leaving the old space empty
+- Low `FILLFACTOR` setting (intentionally leaves space for future inserts, but too low = wasted space)
+
+**Impact:** More pages to read for the same data → more I/O, more buffer pool memory consumed.
 
 ### External (Logical) Fragmentation
-- Pages out of physical order on disk
-- Caused by: page splits during inserts into full pages
-- Result: sequential reads become random I/O
+- Logical order of pages in the index doesn't match physical order on disk
+- Pages are scattered — sequential reads become random I/O
 
-### Solutions
+**How it's caused:**
+- **Page splits** — the #1 cause. When an INSERT or UPDATE needs to go into a page that's already full, SQL Server:
+  1. Allocates a new page (often not physically adjacent)
+  2. Moves ~50% of rows from the full page to the new page
+  3. Inserts the new row
+  4. Now pages are out of order on disk
+- Frequent inserts into the **middle** of an index (non-sequential keys like GUIDs) cause constant page splits
+- Sequential keys (identity columns) mostly append to the end, causing minimal external fragmentation
+
+**Impact:** Range scans and ordered reads become random I/O instead of sequential I/O — significantly slower on HDDs.
+
+### How to Detect Fragmentation
+
+```sql
+SELECT 
+    S.name AS SchemaName,
+    T.name AS TableName,
+    I.name AS IndexName,
+    IPS.avg_fragmentation_in_percent,
+    IPS.avg_page_space_used_in_percent,  -- low = internal fragmentation
+    IPS.page_count
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'SAMPLED') IPS
+JOIN sys.indexes I ON IPS.object_id = I.object_id AND IPS.index_id = I.index_id
+JOIN sys.tables T ON I.object_id = T.object_id
+JOIN sys.schemas S ON T.schema_id = S.schema_id
+WHERE IPS.page_count > 1000  -- skip tiny indexes
+ORDER BY IPS.avg_fragmentation_in_percent DESC
+```
+
+- `avg_fragmentation_in_percent` → external fragmentation (out-of-order pages)
+- `avg_page_space_used_in_percent` → inverse of internal fragmentation (higher = better)
+
+### How to Resolve Fragmentation
 
 | Fragmentation % | Action |
 |---|---|
 | < 5% | Do nothing |
-| 5–30% | `ALTER INDEX REORGANIZE` (online, lightweight) |
-| > 30% | `ALTER INDEX REBUILD` (heavier, can be online) |
+| 5–30% | `ALTER INDEX IX_Name ON Table REORGANIZE` |
+| > 30% | `ALTER INDEX IX_Name ON Table REBUILD` |
 
-**Note**: Less impactful on SSDs but still affects buffer pool efficiency.
+**REORGANIZE vs REBUILD:**
+
+| | REORGANIZE | REBUILD |
+|---|---|---|
+| How | Physically reorders leaf pages in-place | Drops and recreates the entire index |
+| Online | Always online | Offline by default, `ONLINE = ON` available (Enterprise) |
+| Logging | Minimal — can be stopped/resumed | Fully logged |
+| Locks | Lightweight | Heavier — schema modification lock at start/end |
+| Effectiveness | Fixes moderate fragmentation | Fixes severe fragmentation, resets page fullness |
+| Statistics | Does NOT update statistics | Automatically updates statistics |
+
+### Prevention Strategies
+- Use **sequential keys** (identity, sequences) for clustered indexes to avoid mid-index inserts
+- Set appropriate **FILLFACTOR** (e.g., 80-90%) on indexes with frequent mid-page inserts — leaves room to reduce page splits
+- Avoid **GUIDs as clustered keys** — random values cause constant page splits
+- Schedule regular index maintenance jobs (weekly/nightly depending on write volume)
+
+**Note**: Fragmentation is less impactful on SSDs (no seek penalty for random I/O) but still affects buffer pool efficiency — more pages in memory for the same data.
 
 
 ---
 
 ## 7. Row-Level Lock vs Table-Level Lock
 
+### Why Locking Exists
+When multiple transactions access the same data concurrently, locks prevent them from corrupting each other's work. Without locks, two transactions could update the same row simultaneously — one overwrites the other's changes (lost update), or one reads half-written data (dirty read).
+
+SQL Server uses locks at different granularities — the trade-off is always **concurrency vs overhead**.
+
 ### Row-Level Lock
-- Locks individual rows
-- Maximum concurrency — others can access other rows
-- Higher overhead (more lock objects in memory)
-- Use for: **OLTP** — many concurrent users, small targeted operations
+Locks only the **specific row** being read or modified. Other transactions can freely access every other row in the table.
+
+```sql
+-- Transaction A:
+UPDATE Orders SET Status = 'Shipped' WHERE OrderId = 42
+-- Locks ONLY row with OrderId = 42
+
+-- Transaction B (runs concurrently, no blocking):
+UPDATE Orders SET Status = 'Cancelled' WHERE OrderId = 99
+-- Different row → no conflict → executes immediately
+
+-- Transaction C (BLOCKED until A commits/rollbacks):
+UPDATE Orders SET Status = 'Returned' WHERE OrderId = 42
+-- Same row → must wait for A's lock to release
+```
+
+- Maximum concurrency — hundreds of users can work on different rows simultaneously
+- Higher memory overhead — each locked row needs a lock object in memory (~96 bytes per lock)
+- Best for: **OLTP** — many concurrent users doing small, targeted operations (e-commerce, banking)
 
 ### Table-Level Lock
-- Locks entire table
-- Minimal overhead but blocks all other access
-- Use for: **Bulk operations** — mass inserts, ETL, maintenance
+Locks the **entire table**. No other transaction can read or write any row until the lock is released.
+
+```sql
+-- Transaction A:
+BEGIN TRANSACTION
+-- Bulk loading 500K rows with TABLOCK hint
+INSERT INTO Orders WITH (TABLOCK) SELECT * FROM StagingOrders
+-- Entire Orders table is locked
+
+-- Transaction B (BLOCKED — even though it touches a completely different row):
+SELECT * FROM Orders WHERE OrderId = 1
+-- Must wait until A commits, even though row 1 isn't being inserted
+```
+
+- Minimal overhead — one lock object for the whole table instead of thousands
+- Blocks ALL other access — terrible for concurrency
+- Best for: **Bulk operations** — mass inserts, ETL jobs, index rebuilds, maintenance windows
+
+### Page-Level Lock (Middle Ground)
+SQL Server also locks at the **page level** (8KB page, ~rows on one page). It's a middle ground — less overhead than row locks, less blocking than table locks. You rarely control this directly; the engine chooses it.
 
 ### Lock Escalation
-SQL Server auto-escalates row → page → table lock when a transaction holds ~5000+ locks.
+SQL Server automatically escalates from fine-grained to coarse-grained locks to save memory.
 
-| Scenario | Lock Level |
-|---|---|
-| Single row update by PK | Row |
-| Bulk insert of 1M rows | Table |
-| Read-heavy OLTP | Row |
-| Nightly ETL batch job | Table |
+```
+Row Locks → Page Locks → Table Lock
+```
+
+When a single transaction accumulates **~5,000+ locks** on one table, SQL Server escalates to a table lock. This is automatic and can cause unexpected blocking.
+
+```sql
+-- This UPDATE touches 100K rows → starts with row locks
+UPDATE Orders SET Discount = 0.1 WHERE OrderDate < '2023-01-01'
+-- After ~5000 row locks → SQL Server escalates to table lock
+-- Now EVERY other transaction on Orders is blocked, even unrelated ones
+```
+
+**How to handle escalation:**
+- Process large updates in **batches** to stay under the threshold:
+```sql
+WHILE 1 = 1
+BEGIN
+    UPDATE TOP (1000) Orders SET Discount = 0.1 
+    WHERE OrderDate < '2023-01-01' AND Discount != 0.1
+    IF @@ROWCOUNT = 0 BREAK
+END
+```
+- Use `ALTER TABLE Orders SET (LOCK_ESCALATION = DISABLE)` to prevent escalation (use cautiously — high memory usage)
+
+### Lock Types (Shared vs Exclusive)
+
+| Lock Type | Acquired By | Allows Others To | Conflicts With |
+|---|---|---|---|
+| **Shared (S)** | `SELECT` (reads) | Also read (shared locks) | Exclusive locks |
+| **Exclusive (X)** | `INSERT`, `UPDATE`, `DELETE` | Nothing — full block | Everything |
+| **Update (U)** | First phase of `UPDATE` (find the row) | Shared locks | Exclusive and other Update locks |
+
+- Readers don't block readers (shared + shared = OK)
+- Writers block everyone (exclusive blocks all)
+- This is why read-heavy workloads scale well, but write contention is the bottleneck
+
+### When to Use What
+
+| Scenario | Lock Level | Why |
+|---|---|---|
+| Single row update by PK | Row | Minimal blocking, fast |
+| Bulk insert of 1M rows | Table (`TABLOCK`) | One lock instead of 1M, faster bulk load |
+| Read-heavy OLTP | Row | Max concurrency for concurrent users |
+| Nightly ETL batch job | Table | No users online, speed > concurrency |
+| Large UPDATE across many rows | Row + batching | Avoid lock escalation surprises |
 
 ---
 
