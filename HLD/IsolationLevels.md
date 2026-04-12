@@ -230,6 +230,28 @@ ROLLBACK;  -- change is undone, but Session 2 already used it
 ```
 
 ```
+Timeline Diagram — Read Uncommitted:
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6       t7
+─────────────────────────────────────────────────────────────────────────────
+
+T1:      BEGIN    WRITE                                ROLLBACK
+         ║        A=500                                A→1000
+         ║        (was 1000)                           (restored)
+         ║          │                                    ║
+         ║          │                                    ║
+T2:      ║        ║ │      BEGIN    READ A   USE 500   ║        COMMIT
+         ║        ║ │        ║      → 500 ⚠  (decide)  ║          ║
+         ║        ║ │        ║      DIRTY!   based on   ║          ║
+         ║        ║ │        ║               bad data   ║          ║
+─────────────────────────────────────────────────────────────────────────────
+Data:   A=1000   A=500    A=500    A=500    A=500    A=1000    A=1000
+        (real)   (dirty)  (dirty)  (dirty)  (dirty)  (real)    (real)
+─────────────────────────────────────────────────────────────────────────────
+  ⚠ T2 read 500 at t4, but T1 rolled back at t6 → T2 acted on ghost data
+```
+
+```
 When to Use:
   - Almost never in production
   - Approximate analytics where precision doesn't matter
@@ -291,6 +313,32 @@ Implementation Approaches:
    - Readers never block writers, writers never block readers
    - Old row versions kept in undo log / heap
 ─────────────────────────────────────────────────────────
+```
+
+```
+Timeline Diagram — Read Committed:
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6       t7
+─────────────────────────────────────────────────────────────────────────────
+
+T1:      BEGIN    WRITE                     COMMIT
+         ║        price=150                 ║
+         ║        (uncommitted)             ║
+         ║          │                       ║
+         ║          │                       ║
+T2:      ║        ║       BEGIN   READ      ║        READ       COMMIT
+         ║        ║         ║     price      ║        price        ║
+         ║        ║         ║     → 100 ✅   ║        → 150 ⚠     ║
+         ║        ║         ║     (old       ║        (new         ║
+         ║        ║         ║     committed) ║        committed)   ║
+─────────────────────────────────────────────────────────────────────────────
+What T2 sees:                     100 ✅              150 ⚠
+                                  (correct:           (non-repeatable
+                                  no dirty read)       read allowed)
+─────────────────────────────────────────────────────────────────────────────
+  ✅ Dirty read prevented — T2 sees 100 at t4 (T1 not yet committed)
+  ⚠  Non-repeatable read — T2 sees 150 at t6 (T1 committed between reads)
+     Same row, same txn, different value
 ```
 
 ```
@@ -380,6 +428,52 @@ Note: MySQL InnoDB prevents this using next-key locks (gap + record locks).
 ```
 
 ```
+Timeline Diagram — Repeatable Read:
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6       t7
+─────────────────────────────────────────────────────────────────────────────
+                  ┌─── T1 snapshot taken here (t1) ───────────────────┐
+                  │                                                    │
+T1:      BEGIN    READ     ║        ║        READ       ║       COMMIT
+         ║        price    ║        ║        price       ║         ║
+         ║        → 100    ║        ║        → 100 ✅    ║         ║
+         ║        ║        ║        ║        (same!)     ║         ║
+         ║        ║        ║        ║                    ║         ║
+T2:      ║        ║      BEGIN    WRITE     COMMIT       ║         ║
+         ║        ║        ║      price=200  ║           ║         ║
+         ║        ║        ║        ║        ║           ║         ║
+─────────────────────────────────────────────────────────────────────────────
+Actual data:     100      100      200      200        200       200
+What T1 sees:    100                        100 ✅               (ends)
+What T2 sees:                               200                  200
+─────────────────────────────────────────────────────────────────────────────
+  ✅ T1 reads 100 at both t2 and t5 — repeatable read guaranteed
+     T1's snapshot (t1) is frozen; T2's committed write is invisible to T1
+     After T1 commits, a NEW transaction would see 200
+```
+
+```
+Timeline Diagram — Repeatable Read (Phantom Read still possible per SQL standard):
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6
+─────────────────────────────────────────────────────────────────────────────
+
+T1:      BEGIN    SELECT COUNT(*)            SELECT COUNT(*)    COMMIT
+         ║        WHERE dept='Eng'           WHERE dept='Eng'     ║
+         ║        → 10 rows                  → 11 rows ⚠         ║
+         ║          │                          │ PHANTOM!         ║
+         ║          │                          │                  ║
+T2:      ║        ║       BEGIN    INSERT     COMMIT              ║
+         ║        ║         ║      ('Alice',   ║                  ║
+         ║        ║         ║       'Eng')     ║                  ║
+─────────────────────────────────────────────────────────────────────────────
+Rows matching:   10        10       11        11        11       11
+─────────────────────────────────────────────────────────────────────────────
+  ⚠ New row appeared in range query — phantom read
+    (MySQL InnoDB prevents this via gap locks; PostgreSQL via MVCC snapshot)
+```
+
+```
 When to Use:
   - Financial reports that must be self-consistent
   - Any read-heavy transaction that re-reads the same data
@@ -456,11 +550,98 @@ Implementation Approaches:
 ```
 
 ```
+Timeline Diagram — Serializable (2PL-based: lock approach):
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6       t7
+─────────────────────────────────────────────────────────────────────────────
+
+T1:      BEGIN    READ     WRITE             COMMIT   UNLOCK
+         ║        seats    seats=0            ║        ALL
+         ║        → 1      + INSERT           ║          │
+         ║        LOCK(S)  LOCK(X)            ║          │
+         ║        held     held               ║          │
+         ║          │        │                ║          │
+T2:      ║        BEGIN   READ seats          ║        ║       READ seats
+         ║          ║      → BLOCKED 🔒       ║        ║       → 0
+         ║          ║      (T1 holds lock)    ║        ║       (no seats)
+         ║          ║      waiting...         ║        ║       ABORT
+         ║          ║      waiting...         ║        ║       (app logic)
+─────────────────────────────────────────────────────────────────────────────
+  🔒 T2 is blocked at t3 because T1 holds a lock on the seats row
+     T2 can only proceed after T1 commits and releases locks
+     Result: No double-booking — serial equivalent: T1 → T2
+```
+
+```
+Timeline Diagram — Serializable (SSI-based: optimistic approach — PostgreSQL):
+─────────────────────────────────────────────────────────────────────────────
+Time ──→   t1       t2       t3       t4       t5       t6       t7
+─────────────────────────────────────────────────────────────────────────────
+
+T1:      BEGIN    READ     WRITE             COMMIT ✅
+         ║        on_call  Dr.A=off           ║
+         ║        → 2      ║                  ║
+         ║        ║        ║                  ║
+         ║        ║        ║                  ║
+T2:      ║      BEGIN     READ     WRITE     ║        COMMIT ❌
+         ║        ║       on_call  Dr.B=off   ║        SERIALIZATION
+         ║        ║       → 2      ║          ║        ERROR!
+         ║        ║       ║        ║          ║        (must retry)
+─────────────────────────────────────────────────────────────────────────────
+  Both T1 and T2 run concurrently (optimistic — no blocking)
+  At commit time, SSI detects rw-dependency cycle:
+    T1 read on_call count → T2 wrote Dr.B=off (affects T1's read)
+    T2 read on_call count → T1 wrote Dr.A=off (affects T2's read)
+  → Cycle detected → T2 aborted → Application retries T2
+  → T2 retry reads on_call=1 → cannot remove → constraint preserved ✅
+```
+
+```
 When to Use:
   - Financial transactions (double-entry bookkeeping)
   - Constraint enforcement that spans multiple rows/tables
   - Any scenario where write skew is unacceptable
   - Systems where correctness > throughput
+```
+
+---
+
+## Side-by-Side: Same Scenario Across All Isolation Levels
+
+Scenario: T1 writes price=150 (uncommitted), T2 reads price, T1 commits, T2 reads again.
+
+```
+─────────────────────────────────────────────────────────────────────────────
+Time ──→       t1          t2          t3          t4          t5
+               T1:BEGIN    T1:WRITE    T2:READ     T1:COMMIT   T2:READ
+               ║           price=150   price=?     ║           price=?
+─────────────────────────────────────────────────────────────────────────────
+
+Read           ║           ║           → 150 ⚠     ║           → 150
+Uncommitted    ║           ║           (dirty!)    ║           ║
+
+Read           ║           ║           → 100 ✅    ║           → 150 ⚠
+Committed      ║           ║           (clean)     ║           (non-repeatable)
+
+Repeatable     ║           ║           → 100 ✅    ║           → 100 ✅
+Read           ║           ║           (clean)     ║           (stable snapshot)
+
+Serializable   ║           ║           → 100 ✅    ║           → 100 ✅
+               ║           ║           (clean)     ║           (stable + conflict
+               ║           ║                       ║            detection at commit)
+─────────────────────────────────────────────────────────────────────────────
+
+Summary of what T2 sees at each read:
+┌────────────────────┬──────────────┬──────────────┬───────────────────────┐
+│ Isolation Level    │ T2 READ (t3) │ T2 READ (t5) │ Anomaly               │
+│                    │ (before T1   │ (after T1    │                       │
+│                    │  commits)    │  commits)    │                       │
+├────────────────────┼──────────────┼──────────────┼───────────────────────┤
+│ Read Uncommitted   │     150      │     150      │ Dirty Read at t3      │
+│ Read Committed     │     100      │     150      │ Non-Repeatable at t5  │
+│ Repeatable Read    │     100      │     100      │ None                  │
+│ Serializable       │     100      │     100      │ None                  │
+└────────────────────┴──────────────┴──────────────┴───────────────────────┘
 ```
 
 ---
