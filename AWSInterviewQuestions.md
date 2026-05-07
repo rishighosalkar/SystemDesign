@@ -918,3 +918,508 @@ aws sts assume-role \
 | On-premises access | No | Yes (via VPN/DX) |
 | Cross-VPC access | No | Yes (via peering/TGW) |
 | DNS | No private DNS | Private DNS available |
+
+## 31 How does Route 53 routing work? Compare latency, weighted, failover, geolocation, and geoproximity policies.
+
+Answer:
+Route 53 is AWS's DNS service that routes end-user requests to endpoints using various routing policies:
+
+- **Latency-based routing**: Routes traffic to the AWS region that provides the lowest latency for the user. Route 53 measures latency between the user's DNS resolver and AWS regions, then returns the record with the lowest latency.
+
+- **Weighted routing**: Distributes traffic across multiple resources based on assigned weights (0–255). E.g., 70% to one server, 30% to another. Useful for blue-green deployments or A/B testing.
+
+- **Failover routing**: Uses active-passive configuration. Routes to the primary resource; if health checks fail, automatically routes to the secondary (standby) resource. Used for disaster recovery.
+
+- **Geolocation routing**: Routes based on the geographic location of the user (continent, country, or state). If no match is found, a default record is used. Useful for content localization or compliance restrictions.
+
+- **Geoproximity routing** (Traffic Flow only): Routes based on geographic location of resources AND users, with an adjustable bias to expand or shrink the geographic region from which traffic is routed to a resource.
+
+Key differences:
+| Policy | Basis | Use Case |
+|--------|-------|----------|
+| Latency | Network latency measurement | Best performance |
+| Weighted | Assigned proportions | Load distribution, canary |
+| Failover | Health check status | DR / HA |
+| Geolocation | User's location | Compliance, localization |
+| Geoproximity | User + resource location + bias | Fine-grained geographic control |
+
+---
+
+## 32 What is AWS PrivateLink? How is it different from VPC peering?
+
+Answer:
+**AWS PrivateLink** provides private connectivity between VPCs, AWS services, and on-premises networks without exposing traffic to the public internet. It uses interface VPC endpoints (ENIs with private IPs) in your VPC.
+
+**VPC Peering** creates a networking connection between two VPCs that enables routing using private IP addresses (as if they are in the same network).
+
+| Aspect | PrivateLink | VPC Peering |
+|--------|-------------|-------------|
+| Connectivity model | Consumer → Provider (unidirectional) | Bidirectional full network access |
+| Scope | Exposes specific services/applications | Entire VPC CIDR is routable |
+| Overlapping CIDRs | Supported | Not supported |
+| Transitive routing | Not applicable | Not supported |
+| Cross-account/region | Yes | Yes |
+| Security | Least-privilege — only the exposed service is reachable | Broad — all resources in peered VPC are reachable (unless restricted by SGs/NACLs) |
+| Use case | SaaS consumption, microservices, marketplace | Full network integration between VPCs |
+
+Choose PrivateLink when you want to expose a single service securely. Choose VPC Peering when two VPCs need full bidirectional communication.
+
+---
+
+## 33 Explain security groups vs NACLs — stateful vs stateless, evaluation order.
+
+Answer:
+| Feature | Security Groups | NACLs |
+|---------|----------------|-------|
+| Level | Instance (ENI) level | Subnet level |
+| Statefulness | **Stateful** — return traffic is automatically allowed regardless of outbound rules | **Stateless** — return traffic must be explicitly allowed by rules |
+| Rule type | Allow rules only (implicit deny) | Allow AND Deny rules |
+| Evaluation | All rules evaluated together; if any rule allows, traffic passes | Rules evaluated in **number order** (lowest first); first match wins |
+| Default | Denies all inbound, allows all outbound | Default NACL allows all; custom NACL denies all |
+| Association | Applied to specific instances | Applied to all instances in the subnet |
+
+**Evaluation order in practice:**
+1. Traffic enters subnet → NACL inbound rules evaluated (numbered order, first match).
+2. Traffic reaches instance → Security Group inbound rules evaluated (all rules, any allow = pass).
+3. Response leaves instance → Security Group allows automatically (stateful).
+4. Response leaves subnet → NACL outbound rules evaluated (stateless, must explicitly allow).
+
+Best practice: Use Security Groups as primary defense (instance-level), NACLs as secondary subnet-level guardrail.
+
+---
+
+## 34 How would you design a multi-region active-active architecture on AWS?
+
+Answer:
+Key components:
+
+1. **Global traffic routing**: Route 53 with latency-based or geoproximity routing to direct users to the nearest region.
+
+2. **Data replication**:
+   - DynamoDB Global Tables (multi-master, automatic replication)
+   - Aurora Global Database (1 writer region, <1s replication to read replicas in other regions; can promote on failover)
+   - S3 Cross-Region Replication (CRR)
+
+3. **Compute**: Deploy identical application stacks in each region using CloudFormation StackSets or Terraform. Use ECS/EKS/Lambda in each region independently.
+
+4. **Conflict resolution**: For true active-active writes, use last-writer-wins (DynamoDB Global Tables) or application-level conflict resolution (CRDTs).
+
+5. **Session management**: Use DynamoDB or ElastiCache Global Datastore for session state so users can be routed to any region.
+
+6. **Caching**: ElastiCache Global Datastore or CloudFront for edge caching.
+
+7. **Event replication**: EventBridge cross-region event buses or SNS cross-region fanout.
+
+8. **Health checks & failover**: Route 53 health checks on each region's endpoints; automatic DNS failover if a region becomes unhealthy.
+
+9. **CI/CD**: Deploy to all regions simultaneously; use CodePipeline with cross-region actions.
+
+10. **Observability**: CloudWatch cross-account/cross-region dashboards, X-Ray for distributed tracing.
+
+Challenges: Data consistency (eventual vs strong), conflict resolution, cost (2x+ infrastructure), testing failover scenarios.
+
+---
+
+## 35 What is AWS Direct Connect? When would you use it over a VPN connection?
+
+Answer:
+**AWS Direct Connect** is a dedicated private network connection from your on-premises data center to AWS. It bypasses the public internet entirely.
+
+| Aspect | Direct Connect | Site-to-Site VPN |
+|--------|---------------|-----------------|
+| Connection | Dedicated fiber (1 Gbps, 10 Gbps, 100 Gbps) or hosted (50 Mbps–10 Gbps) | Encrypted tunnel over public internet |
+| Latency | Consistent, low latency | Variable (internet-dependent) |
+| Bandwidth | Up to 100 Gbps | Up to 1.25 Gbps per tunnel |
+| Setup time | Weeks to months (physical cross-connect) | Minutes |
+| Cost | Higher upfront (port hours + data transfer) | Lower (per-hour + data transfer) |
+| Encryption | Not encrypted by default (add VPN over DX for encryption) | IPSec encrypted |
+| Redundancy | Need 2 connections at different locations for HA | Multiple tunnels easy to set up |
+
+**Use Direct Connect when:**
+- You need consistent, predictable low-latency connectivity
+- High-throughput workloads (large data transfers, backups, migrations)
+- Regulatory requirements for private connectivity
+- Hybrid architectures with heavy bidirectional traffic
+- Cost optimization on high-volume data transfer (cheaper egress rates)
+
+**Use VPN when:**
+- Quick setup needed
+- Lower bandwidth requirements
+- Backup/failover for Direct Connect
+- Encryption is mandatory without additional overlay
+
+Common pattern: Direct Connect as primary + VPN as backup failover path.
+
+---
+
+## 36 How does AWS Lambda deployment work — packages, container images, layers?
+
+Answer:
+
+**1. Deployment Packages (ZIP):**
+- Bundle your code + dependencies into a .zip file
+- Upload directly (< 50 MB) or via S3 (up to 250 MB unzipped)
+- Fastest cold start; simplest approach for small functions
+
+**2. Container Images:**
+- Package function as an OCI-compliant container image (up to 10 GB)
+- Must implement the Lambda Runtime Interface Client (RIC)
+- Use AWS base images (have RIC built-in) or custom images
+- Stored in ECR; Lambda pulls and caches the image
+- Use case: large dependencies (ML models, heavy libraries), existing CI/CD container pipelines
+
+**3. Lambda Layers:**
+- Reusable ZIP archives containing libraries, custom runtimes, or data
+- Up to 5 layers per function; total unzipped size ≤ 250 MB (with function code)
+- Shared across multiple functions — avoids duplication
+- Versioned and immutable once published
+- Use case: common dependencies (numpy, SDK), custom runtimes, shared utilities
+
+**Deployment methods:**
+- AWS Console (inline editor for small functions)
+- AWS CLI / SDK (`aws lambda update-function-code`)
+- SAM (`sam build && sam deploy`)
+- CloudFormation / CDK
+- Terraform
+
+**Versioning & Aliases:**
+- Publish immutable versions ($LATEST is mutable)
+- Aliases (e.g., "prod", "staging") point to specific versions
+- Aliases support weighted traffic shifting for canary deployments
+
+---
+
+## 37 Why is Lambda suited only for lightweight functions? (cold start, 15-min timeout, memory limits)
+
+Answer:
+
+Lambda is designed for **short-lived, event-driven, stateless** workloads. Its constraints make it unsuitable for heavy/long-running processes:
+
+**1. Cold Starts:**
+- First invocation (or after idle period) requires: downloading code, starting runtime, initializing handler
+- Adds 100ms–10s latency depending on runtime, package size, VPC config
+- Problematic for latency-sensitive synchronous APIs
+- Mitigated by provisioned concurrency (but adds cost)
+
+**2. 15-Minute Timeout:**
+- Maximum execution duration is 900 seconds
+- Not suitable for: ETL on large datasets, video transcoding, long-running batch jobs, ML training
+- Alternative: Step Functions (orchestrate multiple short Lambdas), ECS/Fargate for long tasks
+
+**3. Memory & CPU Limits:**
+- Memory: 128 MB to 10,240 MB (10 GB)
+- CPU scales linearly with memory (1 vCPU at 1,769 MB)
+- No GPU access
+- /tmp storage: 512 MB (configurable up to 10 GB)
+
+**4. Payload Limits:**
+- Synchronous invocation: 6 MB request/response
+- Asynchronous: 256 KB event payload
+
+**5. Concurrency Limits:**
+- Default 1,000 concurrent executions per region (soft limit, can be increased)
+
+**6. Statelessness:**
+- No persistent local state between invocations
+- Must use external stores (DynamoDB, S3, ElastiCache)
+
+**Best suited for:** API backends, event processing, file processing, scheduled tasks, stream processing — all short-duration, bursty workloads.
+
+---
+
+## 38 What is Lambda concurrency? Explain reserved vs provisioned concurrency.
+
+Answer:
+
+**Lambda Concurrency** = number of function instances serving requests simultaneously. One instance handles one request at a time.
+
+**Account-level limit:** 1,000 concurrent executions per region (default, can be increased).
+
+**Unreserved concurrency:** Shared pool available to all functions. If one function spikes, it can starve others.
+
+**Reserved Concurrency:**
+- Guarantees a set number of concurrent instances for a specific function
+- Acts as both a **guarantee** (always available) and a **cap** (cannot exceed)
+- Subtracts from the account pool — other functions cannot use this reserved capacity
+- No additional cost
+- Use case: Ensure critical functions always have capacity; throttle non-critical functions
+
+**Provisioned Concurrency:**
+- Pre-initializes a specified number of execution environments (warm instances)
+- **Eliminates cold starts** — instances are ready to respond immediately
+- You pay for provisioned concurrency even when idle (per-GB-hour)
+- Can use Application Auto Scaling to adjust provisioned concurrency based on schedule or utilization
+- Use case: Latency-sensitive APIs, predictable traffic patterns
+
+| Aspect | Reserved | Provisioned |
+|--------|----------|-------------|
+| Purpose | Guarantee capacity + cap | Eliminate cold starts |
+| Cold starts | Still possible | Eliminated (up to provisioned count) |
+| Cost | Free | Additional charge |
+| Scaling | Scales on-demand within reserved limit | Pre-warmed; scales beyond with cold starts |
+| Throttling | Requests beyond reserved limit get throttled (429) | Requests beyond provisioned count get cold starts (not throttled unless reserved is also set) |
+
+---
+
+## 39 How does API Gateway handle throttling? Explain burst limit, rate limit, and usage plans.
+
+Answer:
+
+**API Gateway Throttling** protects backend services from traffic spikes using the token bucket algorithm.
+
+**Account-level defaults (per region):**
+- **Rate limit (steady-state):** 10,000 requests/second
+- **Burst limit:** 5,000 requests (token bucket capacity)
+
+**How token bucket works:**
+- Bucket fills at the steady-state rate (10,000 tokens/sec)
+- Burst allows short spikes up to 5,000 concurrent requests
+- Once burst tokens are exhausted, requests are throttled to the steady-state rate
+- Throttled requests receive HTTP 429 (Too Many Requests)
+
+**Throttling levels (evaluated in order):**
+1. **Account-level** — hard ceiling across all APIs in the region
+2. **Stage-level** — per-stage default limits (configurable)
+3. **Method-level** — per-resource/method override (e.g., POST /orders = 100 rps)
+4. **Usage plan level** — per API key throttling
+
+**Usage Plans:**
+- Associate API keys with throttling limits and quota
+- **Throttle settings:** rate + burst per API key
+- **Quota:** maximum number of requests in a given time period (day/week/month)
+- Use case: Tiered access (free tier: 100 rps, premium: 5,000 rps), partner APIs, monetization
+
+**Best practices:**
+- Set method-level throttling for expensive operations
+- Use caching to reduce backend calls
+- Implement retry with exponential backoff on client side
+- Monitor with CloudWatch metrics: Count, 4XXError, 5XXError, Latency
+
+---
+
+## 40 What are the differences between REST API, HTTP API, and WebSocket API in API Gateway?
+
+Answer:
+
+| Feature | REST API | HTTP API | WebSocket API |
+|---------|----------|----------|---------------|
+| Protocol | RESTful HTTP | RESTful HTTP | WebSocket (persistent connection) |
+| Cost | Higher (~$3.50/million) | Lower (~$1.00/million) — 71% cheaper | Per-message + connection-minutes |
+| Latency | Higher | Lower (designed for low latency) | Real-time bidirectional |
+| Auth | IAM, Cognito, Lambda authorizer, API keys | IAM, Cognito, JWT (native), Lambda authorizer | IAM, Lambda authorizer |
+| Features | Full-featured: caching, request validation, WAF, resource policies, usage plans, API keys, request/response transformation | Minimal: no caching, no request validation, no WAF, no usage plans | Routes, connection management |
+| Integration | Lambda, HTTP, AWS services, Mock, VPC Link | Lambda, HTTP, VPC Link, private ALB/NLB | Lambda, HTTP, AWS services |
+| Deployment | Stage-based with canary | Automatic deployments | Stage-based |
+| Use case | Full API management, enterprise APIs | Simple proxies, microservices, low-cost APIs | Chat, notifications, live dashboards, gaming |
+
+**Choose REST API when:** You need caching, request validation, WAF integration, API keys/usage plans, or request/response transformations.
+
+**Choose HTTP API when:** You want lower cost, lower latency, simpler proxy to Lambda/HTTP backends, and JWT authorization is sufficient.
+
+**Choose WebSocket API when:** You need persistent bidirectional communication (real-time updates, chat, streaming).
+
+---
+
+## 41 How would you handle Lambda cold starts in a latency-sensitive production system?
+
+Answer:
+
+**1. Provisioned Concurrency (primary solution):**
+- Pre-warms execution environments — eliminates cold starts entirely
+- Use Application Auto Scaling (target tracking or scheduled) to adjust based on traffic patterns
+- Cost: pay for idle provisioned instances
+
+**2. Reduce package size:**
+- Smaller deployment packages = faster cold starts
+- Remove unused dependencies, use tree-shaking
+- Use layers for shared dependencies (cached separately)
+
+**3. Choose optimal runtime:**
+- Python, Node.js, Go → faster cold starts (100–300ms)
+- Java, .NET → slower cold starts (1–5s) unless using SnapStart (Java) or Native AOT (.NET)
+
+**4. Lambda SnapStart (Java):**
+- Takes a snapshot of initialized execution environment after init phase
+- Resumes from snapshot on cold start — reduces Java cold starts from ~5s to ~200ms
+- No additional cost
+
+**5. Avoid VPC (if possible):**
+- VPC-attached Lambdas previously had 10s+ cold starts (now improved with Hyperplane ENI caching)
+- Still slightly slower than non-VPC; avoid unless necessary
+
+**6. Keep functions warm (workaround):**
+- Scheduled CloudWatch Events/EventBridge to invoke function every 5 minutes
+- Hacky; doesn't scale well with concurrency; provisioned concurrency is better
+
+**7. Optimize initialization code:**
+- Move heavy initialization outside the handler (runs once per cold start)
+- Lazy-load modules not needed on every invocation
+- Use connection pooling for DB connections
+
+**8. Architecture alternatives:**
+- Use ALB + Fargate for ultra-latency-sensitive paths
+- Use CloudFront Functions / Lambda@Edge for edge logic
+- Hybrid: API Gateway → Fargate (hot path) + Lambda (background tasks)
+
+---
+
+## 42 Explain Lambda destinations and dead letter queues. When would you use each?
+
+Answer:
+
+**Dead Letter Queues (DLQ):**
+- Configured on the Lambda function itself
+- Captures **failed** asynchronous invocations (after all retries exhausted — default 2 retries)
+- Targets: SQS queue or SNS topic only
+- Contains only the original event payload
+- No context about the error (limited metadata in message attributes)
+- Legacy feature (pre-2019)
+
+**Lambda Destinations:**
+- Configured per function for **asynchronous invocations**
+- Separate destinations for **success** and **failure**
+- Targets: SQS, SNS, Lambda, EventBridge
+- Includes rich context: request payload, response payload, error details, stack trace, request ID, timestamps
+- More flexible routing (e.g., success → EventBridge for further processing)
+
+| Aspect | DLQ | Destinations |
+|--------|-----|-------------|
+| Triggers on | Failure only | Success AND/OR Failure |
+| Targets | SQS, SNS | SQS, SNS, Lambda, EventBridge |
+| Payload | Original event only | Full context (request + response + error) |
+| Configuration | On function | On function (per invocation type) |
+| Use with | Async invocations, SQS trigger (source DLQ) | Async invocations only |
+
+**When to use DLQ:**
+- SQS-triggered Lambda: configure DLQ on the SQS queue (not the function) for messages that exceed maxReceiveCount
+- Simple poison-pill capture with minimal setup
+
+**When to use Destinations:**
+- Async invocations where you need success/failure routing
+- When you need error context for debugging
+- Event-driven workflows (chain Lambdas via EventBridge)
+- Preferred over DLQ for async Lambda invocations (AWS recommendation)
+
+**Both can coexist**, but destinations take precedence for async invocations.
+
+---
+
+## 43 What is Lambda@Edge vs CloudFront Functions? What are their constraints?
+
+Answer:
+
+Both run code at the edge in response to CloudFront events, but differ significantly:
+
+| Feature | CloudFront Functions | Lambda@Edge |
+|---------|---------------------|-------------|
+| Runtime | JavaScript only (ECMAScript 5.1) | Node.js, Python |
+| Execution location | 400+ CloudFront edge locations | ~13 Regional Edge Caches |
+| Max execution time | < 1 ms | 5s (viewer) / 30s (origin) |
+| Max memory | 2 MB | 128–3,008 MB |
+| Max package size | 10 KB | 1 MB (viewer) / 50 MB (origin) |
+| Network access | No | Yes |
+| File system access | No | No |
+| Request body access | No | Yes (origin events) |
+| Triggers | Viewer Request, Viewer Response only | Viewer Request, Viewer Response, Origin Request, Origin Response |
+| Pricing | ~1/6th the cost of Lambda@Edge | Higher |
+| Scale | Millions of requests/sec | Thousands of requests/sec |
+
+**CloudFront Functions — use for:**
+- URL rewrites/redirects
+- Header manipulation (add/modify/delete)
+- Cache key normalization
+- Simple A/B testing (cookie-based routing)
+- JWT/token validation (lightweight)
+- Request/response header manipulation
+
+**Lambda@Edge — use for:**
+- Dynamic content generation at edge
+- Complex authentication/authorization
+- Image resizing/transformation
+- SEO optimization (server-side rendering)
+- Origin selection/failover logic
+- Accessing external services (network calls)
+- Modifying request body
+
+**Constraints shared:**
+- No VPC access
+- No environment variables (Lambda@Edge)
+- Must be deployed in us-east-1 (Lambda@Edge)
+- No DLQ or destinations
+- Immutable versions only (no $LATEST for Lambda@Edge)
+
+---
+
+## 44 How do you manage secrets and environment variables securely in Lambda?
+
+Answer:
+
+**1. Environment Variables (basic):**
+- Key-value pairs set in function configuration
+- Encrypted at rest with AWS KMS (default service key or custom CMK)
+- Visible in console/API — not suitable for highly sensitive secrets
+- Use for: non-sensitive config (feature flags, stage name, table names)
+
+**2. AWS Secrets Manager (recommended for secrets):**
+- Stores secrets (DB credentials, API keys, tokens) with automatic rotation
+- Lambda fetches at runtime via SDK: `secretsmanager.get_secret_value()`
+- Cache secrets in memory (use AWS Secrets Manager caching library) to avoid API calls on every invocation
+- Supports cross-account access via resource policies
+- Cost: $0.40/secret/month + $0.05/10,000 API calls
+
+**3. AWS Systems Manager Parameter Store:**
+- Free tier: Standard parameters (up to 10,000, 4 KB each)
+- SecureString parameters encrypted with KMS
+- Hierarchical naming: `/app/prod/db-password`
+- Use AWS Parameters and Secrets Lambda Extension (caches values, reduces API calls)
+- Use for: configuration + secrets when rotation isn't needed
+
+**4. Lambda Extensions for caching:**
+- AWS Parameters and Secrets Lambda Extension — sidecar that caches SSM/Secrets Manager values
+- Reduces latency and API costs
+- TTL-based cache refresh
+
+**5. IAM best practices:**
+- Grant least-privilege IAM role to Lambda (only `secretsmanager:GetSecretValue` for specific ARNs)
+- Use resource-based policies on secrets
+- Enable KMS key policies to restrict decryption
+
+**6. What NOT to do:**
+- ❌ Hardcode secrets in code
+- ❌ Store secrets in environment variables in plaintext without KMS
+- ❌ Commit secrets to source control
+- ❌ Log secrets (mask in CloudWatch)
+
+---
+
+## 45 What is the difference between SQS Standard and FIFO queues? When do you choose FIFO despite the throughput limit?
+
+Answer:
+
+| Feature | SQS Standard | SQS FIFO |
+|---------|-------------|----------|
+| Ordering | Best-effort ordering (no guarantee) | Strict first-in-first-out ordering |
+| Delivery | At-least-once (possible duplicates) | Exactly-once processing (deduplication) |
+| Throughput | Virtually unlimited | 300 msg/sec (without batching) or 3,000 msg/sec (with batching); high-throughput mode: 30,000 msg/sec per API action |
+| Deduplication | Not built-in | Content-based or MessageDeduplicationId (5-min window) |
+| Message groups | Not applicable | MessageGroupId enables parallel processing while maintaining order within each group |
+| Queue name | Any name | Must end with `.fifo` suffix |
+| Cost | Lower | ~25% more expensive |
+
+**Choose FIFO when:**
+1. **Order matters**: Financial transactions, event sourcing, command processing where sequence is critical
+2. **Exactly-once processing required**: Payment processing, inventory updates — duplicates cause real harm
+3. **Regulatory/compliance**: Audit trails that must reflect exact order of operations
+4. **State machines**: Events that build on previous state (e.g., order status: placed → paid → shipped)
+5. **Message grouping**: Need parallel processing across groups but strict order within each group (e.g., per-customer order processing)
+
+**Choose Standard when:**
+- Throughput is the priority (millions of messages/sec)
+- Application is idempotent (handles duplicates gracefully)
+- Order doesn't matter (e.g., image thumbnailing, email sending, log processing)
+- Fan-out workloads with independent messages
+
+**FIFO throughput workaround:**
+- Use multiple MessageGroupIds to parallelize (each group is an independent ordered stream)
+- Enable high-throughput mode (up to 30,000 TPS with batching)
+- Partition workload across multiple FIFO queues if needed
