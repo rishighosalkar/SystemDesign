@@ -9,6 +9,7 @@ LLD/BehavioralDesignPatterns/ChainOfResponsibilityDesignPattern/.vs
 
 LLD/CreationalDesignPatterns/BuilderDesignPattern/.vs
 LLD/CreationalDesignPatterns/FactoryAndAbstractFactoryDesignPattern/.vs
+LLD/CreationalDesignPatterns/SingletonDesignPattern/.vs
 
 LLD/StructuralDesignPatterns/DecoratorPattern/.vs
 LLD/StructuralDesignPatterns/AdapterDesignPattern/.vs
