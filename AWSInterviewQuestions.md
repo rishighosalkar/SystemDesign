@@ -1423,3 +1423,296 @@ Answer:
 - Use multiple MessageGroupIds to parallelize (each group is an independent ordered stream)
 - Enable high-throughput mode (up to 30,000 TPS with batching)
 - Partition workload across multiple FIFO queues if needed
+
+---
+
+**Q46. Explain SQS visibility timeout, message retention, and dead letter queues.**
+
+**Visibility Timeout:**
+When a consumer picks up a message, SQS hides it from other consumers for a configurable duration (default 30s, max 12 hours). If the consumer processes and deletes it within that window, it's gone. If not (e.g., consumer crashes), the message becomes visible again and can be reprocessed. You should set the visibility timeout slightly longer than your expected processing time.
+
+**Message Retention:**
+SQS retains messages for 1 minute to 14 days (default 4 days). After that, messages are automatically deleted whether consumed or not.
+
+**Dead Letter Queue (DLQ):**
+A separate SQS queue where messages are sent after exceeding the `maxReceiveCount` (i.e., failed processing N times). DLQs help isolate poison-pill messages for debugging without blocking the main queue. You configure a redrive policy on the source queue pointing to the DLQ.
+
+---
+
+**Q47. What is SNS fan-out pattern? Walk through an architecture using SNS + multiple SQS subscribers.**
+
+**Fan-out** means publishing one message to SNS and having it delivered simultaneously to multiple subscribers.
+
+**Architecture:**
+1. Producer publishes a single message to an SNS topic (e.g., `order-placed`).
+2. SNS topic has 3 SQS queue subscriptions:
+   - `inventory-queue` → Inventory service decrements stock
+   - `email-queue` → Notification service sends confirmation email
+   - `analytics-queue` → Analytics service logs the event
+3. Each SQS queue decouples the downstream service, allowing independent scaling and retry logic.
+
+**Benefits:** Decoupling, parallel processing, each subscriber can fail independently without affecting others.
+
+---
+
+**Q48. How does SQS long polling differ from short polling? Why is long polling preferred?**
+
+| | Short Polling | Long Polling |
+|---|---|---|
+| Behavior | Returns immediately, even if queue is empty | Waits up to 20s for a message to arrive |
+| Empty responses | Frequent | Rare |
+| Cost | Higher (more API calls) | Lower |
+| Latency | Slightly lower on busy queues | Negligible difference |
+
+**Why long polling is preferred:**
+- Reduces the number of empty `ReceiveMessage` API calls → lower cost
+- Reduces CPU/network overhead on the consumer side
+- Messages are returned as soon as they arrive within the wait window
+
+Enable via `WaitTimeSeconds=20` on the `ReceiveMessage` call or at the queue level.
+
+---
+
+**Q49. When would you choose SQS vs SNS vs EventBridge?**
+
+| Service | Best For |
+|---|---|
+| **SQS** | Decoupled async processing, task queues, load leveling, exactly-once or at-least-once delivery to a single consumer group |
+| **SNS** | Fan-out to multiple subscribers (SQS, Lambda, HTTP), push-based pub/sub, simple topic-based routing |
+| **EventBridge** | Event-driven architectures, routing events based on content/rules, SaaS integrations, scheduled events (cron), cross-account/cross-region event buses |
+
+**Rule of thumb:**
+- Point-to-point queue → SQS
+- Broadcast to many → SNS
+- Complex routing / event-driven microservices / SaaS → EventBridge
+
+---
+
+**Q50. What is Amazon MQ? When would you use it over SQS/SNS?**
+
+Amazon MQ is a managed message broker service supporting **Apache ActiveMQ** and **RabbitMQ** protocols (AMQP, MQTT, STOMP, OpenWire, WebSocket).
+
+**Use Amazon MQ when:**
+- Migrating an on-premises application that already uses JMS, AMQP, MQTT, or STOMP — you want a lift-and-shift without rewriting messaging code.
+- Your application requires protocol-level compatibility with standard broker APIs.
+
+**Use SQS/SNS when:**
+- Building cloud-native applications from scratch.
+- You need massive scale, serverless operation, and tight AWS integration.
+- No legacy protocol requirements.
+
+**Key difference:** SQS/SNS are AWS-proprietary, infinitely scalable, and serverless. Amazon MQ is protocol-compatible but requires broker instance sizing and management.
+
+---
+
+**Q51. How does DynamoDB partition key design affect performance? What is a hot partition?**
+
+DynamoDB distributes data across partitions based on the partition key hash. Each partition supports up to **3,000 RCUs** and **1,000 WCUs**.
+
+**Good partition key design:**
+- High cardinality (many distinct values) — e.g., `userId`, `orderId`
+- Evenly distributes reads and writes across partitions
+
+**Hot Partition:**
+Occurs when too many requests target the same partition key value (e.g., using `date` as a partition key means all today's writes go to one partition). This causes throttling even if overall table capacity is sufficient.
+
+**Mitigations:**
+- Use high-cardinality keys
+- Add a random suffix/prefix to spread writes (write sharding)
+- Use composite keys to distribute load
+
+---
+
+**Q52. Explain DynamoDB read consistency — eventually consistent vs strongly consistent reads.**
+
+**Eventually Consistent Reads (default):**
+- DynamoDB returns data from any of the replica nodes.
+- Data may be slightly stale (replication lag of typically under a second).
+- Costs **0.5 RCU per 4KB**.
+- Best for most read-heavy workloads where slight staleness is acceptable.
+
+**Strongly Consistent Reads:**
+- DynamoDB reads from the leader node, guaranteeing the most up-to-date data.
+- Costs **1 RCU per 4KB** (double the cost).
+- Use when your application requires read-after-write consistency (e.g., financial balances, inventory counts).
+- Not available on Global Secondary Indexes (GSIs).
+
+---
+
+**Q53. What is DynamoDB DAX and when would you use it?**
+
+**DAX (DynamoDB Accelerator)** is a fully managed, in-memory cache for DynamoDB that delivers microsecond read latency (vs single-digit milliseconds for DynamoDB).
+
+**How it works:**
+- DAX sits in front of DynamoDB as a write-through cache.
+- Reads are served from cache; on a cache miss, DAX fetches from DynamoDB and caches the result.
+- API-compatible — minimal code changes needed.
+
+**Use DAX when:**
+- Read-heavy workloads with repeated reads of the same items (e.g., product catalog, leaderboards)
+- Microsecond latency is required
+- You want to reduce RCU consumption and cost
+
+**Don't use DAX when:**
+- Write-heavy workloads (DAX doesn't cache writes in a way that reduces WCUs)
+- Strongly consistent reads are required (DAX only supports eventually consistent)
+- Data changes frequently and cache hit rate would be low
+
+---
+
+**Q54. Explain DynamoDB Streams. What use cases does it enable?**
+
+**DynamoDB Streams** captures a time-ordered sequence of item-level changes (INSERT, MODIFY, REMOVE) in a table. Records are retained for 24 hours.
+
+**Stream view types:**
+- `KEYS_ONLY` — only key attributes
+- `NEW_IMAGE` — entire item after change
+- `OLD_IMAGE` — entire item before change
+- `NEW_AND_OLD_IMAGES` — both before and after
+
+**Use cases:**
+- **Change Data Capture (CDC):** Trigger downstream processing on data changes
+- **Lambda triggers:** Invoke Lambda on every write for real-time processing
+- **Cross-region replication:** Foundation for DynamoDB Global Tables
+- **Audit logging:** Record all changes to items
+- **Search indexing:** Sync changes to Elasticsearch/OpenSearch
+- **Event sourcing:** Rebuild state from the stream of changes
+
+---
+
+**Q55. What is the difference between DynamoDB on-demand and provisioned capacity modes?**
+
+| | On-Demand | Provisioned |
+|---|---|---|
+| Capacity | Auto-scales instantly | You set RCU/WCU manually (or with Auto Scaling) |
+| Pricing | Pay per request | Pay for provisioned capacity regardless of usage |
+| Best for | Unpredictable/spiky traffic, new tables | Predictable, steady workloads |
+| Cost at scale | More expensive at high, consistent throughput | More cost-efficient at steady load |
+| Throttling | No throttling (within account limits) | Throttled if you exceed provisioned capacity |
+
+**Rule of thumb:** Start with on-demand for new applications. Switch to provisioned once traffic patterns are understood to optimize cost.
+
+---
+
+**Q56. How do you model a one-to-many relationship in DynamoDB? (single-table design)**
+
+In single-table design, you store multiple entity types in one table using a generic `PK` and `SK` (sort key) pattern.
+
+**Example: Customer → Orders**
+
+| PK | SK | Attributes |
+|---|---|---|
+| `CUSTOMER#123` | `METADATA` | name, email |
+| `CUSTOMER#123` | `ORDER#2024-001` | total, status |
+| `CUSTOMER#123` | `ORDER#2024-002` | total, status |
+
+**Access patterns:**
+- Get customer: `PK = CUSTOMER#123, SK = METADATA`
+- Get all orders for customer: `PK = CUSTOMER#123, SK begins_with ORDER#`
+- Get specific order: `PK = CUSTOMER#123, SK = ORDER#2024-001`
+
+**Key principle:** Design your keys around your access patterns, not your entity relationships. Use `begins_with`, `between`, and `SK` range queries to fetch related items efficiently in a single query.
+
+---
+
+**Q57. What are Global Secondary Indexes vs Local Secondary Indexes? Trade-offs?**
+
+**Local Secondary Index (LSI):**
+- Same partition key as the base table, different sort key
+- Must be created at table creation time (cannot add later)
+- Shares the partition's read/write capacity with the base table
+- Supports strongly consistent reads
+- Max 5 per table
+- Max 10GB per partition key value
+
+**Global Secondary Index (GSI):**
+- Different partition key and/or sort key from the base table
+- Can be added or deleted at any time
+- Has its own separate provisioned/on-demand capacity
+- Only eventually consistent reads
+- Max 20 per table (default)
+
+**Trade-offs:**
+
+| | LSI | GSI |
+|---|---|---|
+| Flexibility | Low (fixed at creation) | High (add anytime) |
+| Consistency | Strong or eventual | Eventual only |
+| Capacity | Shared with table | Independent |
+| Use case | Alternate sort on same partition | Entirely new access pattern |
+
+**Prefer GSIs** in most cases due to flexibility. Use LSIs only when you need strongly consistent alternate sort queries within a partition.
+
+---
+
+**Q58. What is the difference between RDS Multi-AZ and Read Replicas?**
+
+**Multi-AZ:**
+- Primary purpose: **High availability and failover**
+- Synchronous replication to a standby instance in another AZ
+- Standby is not readable — it's purely for failover
+- Automatic failover in ~1–2 minutes if primary fails
+- No performance benefit for reads
+
+**Read Replicas:**
+- Primary purpose: **Read scaling**
+- Asynchronous replication to one or more replica instances
+- Replicas are readable — offload read traffic from primary
+- Can be in same AZ, different AZ, or different region (cross-region replicas)
+- Can be promoted to standalone DB (useful for DR)
+- Up to 5 replicas for MySQL/PostgreSQL/MariaDB; 15 for Aurora
+
+**Summary:** Multi-AZ = HA/DR. Read Replicas = read scalability. You can and should use both together for production workloads.
+
+---
+
+**Q59. How does Aurora differ from standard RDS? Explain Aurora's shared storage architecture.**
+
+**Aurora** is AWS's cloud-native relational database, compatible with MySQL and PostgreSQL but rebuilt from the ground up for the cloud.
+
+**Key differences from standard RDS:**
+
+| | Standard RDS | Aurora |
+|---|---|---|
+| Storage | EBS volume per instance | Shared distributed storage |
+| Replication | Block-level replication | Storage-level replication |
+| Failover time | ~1–2 min | ~30 seconds |
+| Read replicas | Up to 5 | Up to 15 |
+| Storage scaling | Manual | Auto-grows in 10GB increments up to 128TB |
+| Performance | Baseline | Up to 5x MySQL, 3x PostgreSQL |
+
+**Aurora Shared Storage Architecture:**
+- Storage is decoupled from compute. All DB instances (writer + readers) share the same distributed storage layer.
+- Data is replicated **6 ways across 3 AZs** (2 copies per AZ) automatically.
+- Only **redo logs** are written to storage (not full data pages), reducing write amplification.
+- A read replica can be promoted to writer instantly since it already has access to the same storage — no data copy needed.
+- Quorum-based reads/writes: tolerates loss of 2 copies for writes, 3 copies for reads.
+
+---
+
+**Q60. What is Aurora Serverless v2? How does it differ from provisioned Aurora?**
+
+**Aurora Serverless v2** automatically scales Aurora capacity up and down based on actual workload demand, measured in **Aurora Capacity Units (ACUs)**.
+
+**How it works:**
+- You set a min and max ACU range (e.g., 0.5 to 128 ACUs).
+- Aurora scales in fine-grained increments (as small as 0.5 ACU) within seconds.
+- You pay per ACU-second consumed, not for idle capacity.
+
+**Differences from Provisioned Aurora:**
+
+| | Provisioned Aurora | Aurora Serverless v2 |
+|---|---|---|
+| Capacity | Fixed instance size (e.g., r6g.large) | Dynamic ACU range |
+| Scaling | Manual or slow Auto Scaling | Near-instant, fine-grained |
+| Cost model | Per instance-hour | Per ACU-second |
+| Best for | Steady, predictable workloads | Variable, spiky, or dev/test workloads |
+| Multi-AZ | Yes | Yes |
+| Read replicas | Yes | Yes (can mix with provisioned) |
+| Scale to zero | No | Yes (min 0 ACU — pauses when idle) |
+
+**When to use Serverless v2:**
+- Unpredictable or bursty traffic (e.g., SaaS multi-tenant apps)
+- Dev/test environments (scale to zero when not in use)
+- Applications with infrequent but sudden spikes
+- When you want to avoid over-provisioning costs
