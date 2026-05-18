@@ -1716,3 +1716,306 @@ In single-table design, you store multiple entity types in one table using a gen
 - Dev/test environments (scale to zero when not in use)
 - Applications with infrequent but sudden spikes
 - When you want to avoid over-provisioning costs
+
+---
+
+
+**61. How do you handle schema migrations in RDS/Aurora with zero downtime?**
+
+Use backward-compatible, multi-phase migrations:
+
+- **Expand-Contract pattern**: Add new columns/tables first (expand), deploy app code that handles both old and new schema, then remove old columns (contract) in a later release.
+- **Aurora Blue/Green Deployments**: AWS-native feature that creates a staging environment, applies schema changes, then promotes with minimal cutover (typically < 1 min).
+- **Online DDL**: MySQL/Aurora supports `ALTER TABLE ... ALGORITHM=INPLACE` for many operations without locking. Use `pt-online-schema-change` or `gh-ost` for large tables.
+- **Read Replica promotion**: Apply migration to a read replica, promote it, then switch traffic.
+- **Feature flags**: Gate new schema-dependent code paths until migration is fully rolled out.
+
+Key rule: never deploy code and schema changes simultaneously — always decouple them.
+
+---
+
+**62. What is ECS? Compare ECS with EC2 launch type vs Fargate launch type.**
+
+Amazon ECS (Elastic Container Service) is a fully managed container orchestration service for running Docker containers on AWS.
+
+| Aspect | EC2 Launch Type | Fargate Launch Type |
+|---|---|---|
+| Infrastructure | You manage EC2 instances (patching, scaling, capacity) | AWS manages all underlying infrastructure |
+| Cost model | Pay for EC2 instances regardless of utilization | Pay per vCPU/memory per second of task runtime |
+| Control | Full OS-level access, custom AMIs, GPU support | No host access; isolated per-task |
+| Scaling | Must scale EC2 cluster + tasks separately | Tasks scale independently, no cluster management |
+| Best for | High-density workloads, cost optimization at scale, GPU | Serverless containers, variable/bursty workloads, simplicity |
+
+---
+
+**63. How does ECS service discovery work? How does it integrate with Route 53?**
+
+ECS Service Discovery uses **AWS Cloud Map** backed by **Route 53 private hosted zones**:
+
+1. When a service is created with service discovery enabled, ECS registers each task as a **Route 53 DNS record** (A or SRV) in a private hosted zone.
+2. As tasks start/stop, ECS automatically registers/deregisters DNS records via Cloud Map.
+3. Other services resolve the service by DNS name (e.g., `backend.local`) — Route 53 returns the IPs of healthy task instances.
+4. Health checks can be configured at the Cloud Map level to remove unhealthy tasks from DNS.
+
+This enables service-to-service communication without a load balancer for internal microservices.
+
+---
+
+**64. ECS vs EKS — when would you choose one over the other?**
+
+| Factor | Choose ECS | Choose EKS |
+|---|---|---|
+| Kubernetes requirement | No K8s needed | Need K8s ecosystem (Helm, operators, CRDs) |
+| Operational complexity | Simpler, AWS-native | More complex, steeper learning curve |
+| Portability | AWS-specific | Portable across clouds/on-prem |
+| Ecosystem | AWS integrations (ALB, IAM, CloudWatch) are tighter | Rich OSS ecosystem (Istio, Prometheus, ArgoCD) |
+| Team expertise | Smaller teams, AWS-focused | Teams with existing K8s expertise |
+| Multi-cloud/hybrid | Not ideal | Strong fit |
+
+Choose ECS for simplicity and tight AWS integration. Choose EKS when you need Kubernetes-native tooling, portability, or have existing K8s workflows.
+
+---
+
+**65. How do you manage secrets for ECS tasks? (Secrets Manager integration with task definitions)**
+
+Reference secrets directly in the ECS task definition — never hardcode them:
+
+```json
+"secrets": [
+  {
+    "name": "DB_PASSWORD",
+    "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789:secret:prod/db-password"
+  }
+]
+```
+
+- ECS injects the secret value as an **environment variable** at task startup.
+- You can also reference **SSM Parameter Store** parameters using the same `secrets` field.
+- The **task execution IAM role** must have `secretsmanager:GetSecretValue` permission.
+- Secrets are fetched at task launch — to pick up rotated secrets, tasks must be restarted (or use the SDK inside the app for dynamic refresh).
+
+---
+
+**66. What is Amazon Kinesis Data Streams vs Kinesis Data Firehose? When do you use each?**
+
+| Aspect | Kinesis Data Streams (KDS) | Kinesis Data Firehose |
+|---|---|---|
+| Purpose | Real-time custom stream processing | Managed delivery to destinations |
+| Consumers | Custom (Lambda, KCL, Flink) | Fully managed — no consumer code needed |
+| Latency | ~70ms (real-time) | 60s–900s buffer (near real-time) |
+| Retention | 1–365 days | No retention — deliver and forget |
+| Scaling | Manual shard management | Auto-scales |
+| Destinations | Any custom consumer | S3, Redshift, OpenSearch, Splunk, HTTP |
+| Use when | Custom processing, fan-out, replay needed | Simple ETL/delivery pipeline to a data store |
+
+Use KDS when you need real-time processing with custom logic. Use Firehose when you just need to land data in S3/Redshift/OpenSearch with minimal code.
+
+---
+
+**67. How does Kinesis shard capacity work? How do you handle hot shards?**
+
+Each shard provides:
+- **1 MB/s write** (1,000 records/s)
+- **2 MB/s read** per consumer
+
+**Hot shards** occur when a partition key has high cardinality skew (e.g., all records use the same key), concentrating traffic on one shard.
+
+Mitigation strategies:
+- **Randomize/distribute partition keys** — use high-cardinality keys (user ID, UUID) instead of static values.
+- **Shard splitting** — split the hot shard into two via the `SplitShard` API.
+- **Enhanced fan-out** — gives each consumer its own 2 MB/s read throughput, reducing read contention.
+- **Aggregation** — use KPL (Kinesis Producer Library) to batch small records into single Kinesis records.
+- Monitor with CloudWatch metrics: `WriteProvisionedThroughputExceeded`, `ReadProvisionedThroughputExceeded`.
+
+---
+
+**68. What is the difference between Kinesis and SQS for stream processing?**
+
+| Aspect | Kinesis Data Streams | SQS |
+|---|---|---|
+| Ordering | Per-shard ordering guaranteed | Standard: no order; FIFO: per message group |
+| Replay | Yes — data retained up to 365 days | No — message deleted after consumption |
+| Consumers | Multiple consumers read same data independently | Message consumed by one consumer (unless SNS fan-out) |
+| Throughput | Shard-based, provisioned | Virtually unlimited, fully managed |
+| Latency | ~70ms | Milliseconds to seconds |
+| Use case | Real-time analytics, event sourcing, log ingestion | Task queues, decoupling microservices, job processing |
+| Message size | Max 1 MB | Max 256 KB |
+
+Use Kinesis when you need ordered, replayable, multi-consumer streams. Use SQS for decoupled task/job queues where each message is processed once.
+
+---
+
+**69. What is Amazon OpenSearch Service (Elasticsearch)? What are typical use cases?**
+
+Amazon OpenSearch Service is a managed service for deploying, operating, and scaling OpenSearch (forked from Elasticsearch) and Kibana/OpenSearch Dashboards clusters.
+
+Typical use cases:
+- **Log analytics** — ingest and search application/infrastructure logs (e.g., from Kinesis Firehose or Logstash)
+- **Full-text search** — product search, document search with relevance ranking
+- **Security analytics** — SIEM, threat detection on log data
+- **Observability** — traces, metrics, and log correlation
+- **E-commerce search** — faceted search, autocomplete, fuzzy matching
+- **Clickstream analytics** — real-time user behavior analysis
+
+---
+
+**70. How does OpenSearch handle indexing and search? What is an inverted index?**
+
+**Indexing**: When a document is ingested, OpenSearch analyzes text fields (tokenization, lowercasing, stemming) and builds an **inverted index** per field.
+
+**Inverted index**: A data structure that maps each unique term to the list of documents containing that term — the inverse of a document→words mapping.
+
+Example:
+```
+Term       → Document IDs
+"aws"      → [doc1, doc3, doc5]
+"kinesis"  → [doc2, doc3]
+"lambda"   → [doc1, doc4]
+```
+
+**Search**: A query is analyzed the same way as indexed text, terms are looked up in the inverted index, matching document IDs are retrieved, and relevance scores (BM25 by default) are computed to rank results.
+
+OpenSearch distributes index shards across nodes — each shard is a self-contained Lucene index. Queries are broadcast to all shards, results are merged and ranked by the coordinating node.
+
+---
+
+**71. How would you architect a real-time log analytics pipeline using Kinesis + OpenSearch?**
+
+```
+App/Services → Kinesis Data Streams → Lambda (transform/enrich) → Kinesis Firehose → OpenSearch Service → OpenSearch Dashboards
+                                                                        ↓
+                                                                    S3 (backup/replay)
+```
+
+Key design decisions:
+- **Kinesis Data Streams**: ingest high-volume log events with ordering and replay capability.
+- **Lambda**: filter, enrich, or transform records (e.g., parse JSON, add geo-IP, mask PII) before delivery.
+- **Kinesis Firehose**: buffer and batch-deliver to OpenSearch (and S3 as backup). Handles retries and format conversion.
+- **OpenSearch**: index logs with time-based index rotation (daily/weekly) using Index State Management (ISM) to auto-delete old indices.
+- **OpenSearch Dashboards**: visualize logs, create alerts on error rate thresholds.
+- **IAM + VPC**: deploy OpenSearch in a VPC, use fine-grained access control, encrypt at rest and in transit.
+
+---
+
+**72. Redis vs Memcached on ElastiCache — which do you choose and why?**
+
+| Feature | Redis | Memcached |
+|---|---|---|
+| Data structures | Strings, hashes, lists, sets, sorted sets, streams | Strings only |
+| Persistence | RDB snapshots + AOF | None |
+| Replication | Yes (primary + replicas) | No |
+| Cluster mode | Yes (sharding across nodes) | Yes (client-side sharding) |
+| Pub/Sub | Yes | No |
+| Lua scripting | Yes | No |
+| Multi-threading | Single-threaded (Redis 6+ has I/O threads) | Multi-threaded |
+| Use case | Sessions, leaderboards, rate limiting, queues, pub/sub | Simple high-throughput object caching |
+
+**Choose Redis** for almost all use cases — it's more feature-rich. Choose Memcached only if you need pure horizontal scaling of simple key-value caching with multi-threaded performance and don't need persistence or replication.
+
+---
+
+**73. What caching strategies does ElastiCache support? (cache-aside, write-through, write-behind)**
+
+- **Cache-aside (lazy loading)**: App checks cache first; on miss, reads from DB and populates cache. Cache only contains requested data. Risk: cache miss penalty, stale data if TTL not set.
+
+- **Write-through**: On every DB write, app also writes to cache. Cache is always up to date. Risk: write latency increases; cache may hold data that's never read (wasted memory).
+
+- **Write-behind (write-back)**: App writes to cache first; cache asynchronously flushes to DB. Lowest write latency. Risk: data loss if cache node fails before flush; complexity.
+
+- **Read-through**: Cache sits in front of DB; on miss, cache itself fetches from DB (not the app). Simplifies app logic. ElastiCache doesn't natively support this — requires a caching layer/library.
+
+- **TTL-based expiration**: Used with any strategy to bound staleness and manage memory.
+
+Most production systems use **cache-aside** for reads and **write-through** or TTL invalidation for consistency.
+
+---
+
+**74. How does ElastiCache Redis cluster mode work? Explain sharding and replication.**
+
+**Cluster mode disabled**: Single shard — one primary node + up to 5 read replicas. All data on one shard. Vertical scaling only.
+
+**Cluster mode enabled**: Data is partitioned across **up to 500 shards** using consistent hashing on key slots (16,384 total slots divided across shards). Each shard has one primary + up to 5 replicas.
+
+```
+Shard 1 (slots 0–5460):     Primary → Replica1, Replica2
+Shard 2 (slots 5461–10922): Primary → Replica1, Replica2
+Shard 3 (slots 10923–16383):Primary → Replica1, Replica2
+```
+
+- **Replication**: Async replication from primary to replicas within each shard. Replicas serve reads (with eventual consistency) and provide failover.
+- **Failover**: If a primary fails, ElastiCache promotes a replica automatically (Multi-AZ).
+- **Resharding**: You can add/remove shards online — ElastiCache rebalances slots with minimal impact.
+- **Client requirement**: Clients must be cluster-aware (e.g., `redis-py-cluster`, Lettuce) to route commands to the correct shard.
+
+---
+
+**75. What is a CloudFront Origin Access Control (OAC)? How does it secure S3 origins?**
+
+OAC is the modern replacement for Origin Access Identity (OAI). It restricts S3 bucket access so that only CloudFront can fetch objects — direct S3 URL access is blocked.
+
+How it works:
+1. Create an OAC in CloudFront and associate it with the distribution's S3 origin.
+2. CloudFront signs requests to S3 using **SigV4** with the OAC credentials.
+3. Update the S3 bucket policy to allow `s3:GetObject` only from the specific CloudFront distribution's service principal:
+
+```json
+{
+  "Principal": { "Service": "cloudfront.amazonaws.com" },
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::my-bucket/*",
+  "Condition": {
+    "StringEquals": {
+      "AWS:SourceArn": "arn:aws:cloudfront::123456789:distribution/EDFDVBD6EXAMPLE"
+    }
+  }
+}
+```
+
+4. The S3 bucket remains private (no public access). All traffic must go through CloudFront.
+
+OAC advantages over OAI: supports SSE-KMS encrypted buckets, all S3 regions, and POST/PUT methods.
+
+---
+
+**76. How do you invalidate CloudFront cache? What are the cost and latency implications?**
+
+**Invalidation methods**:
+- **API/Console invalidation**: `aws cloudfront create-invalidation --paths "/images/*" "/index.html"`. Propagates to all edge locations globally.
+- **Versioned file names**: Preferred approach — embed version/hash in filenames (e.g., `app.v2.js`). No invalidation needed; old and new versions coexist.
+- **Cache-Control headers**: Set short TTLs (`max-age`) on frequently changing objects at the origin.
+
+**Cost implications**:
+- First **1,000 invalidation paths per month** are free.
+- Beyond that, **$0.005 per path** (a wildcard `/*` counts as one path).
+- Wildcard invalidations are cost-effective but less precise.
+
+**Latency implications**:
+- Invalidation propagation takes **seconds to a few minutes** to reach all edge locations globally.
+- During propagation, some edges may still serve stale content.
+- There is no SLA guarantee on propagation time.
+- Versioned filenames eliminate this uncertainty entirely — preferred for CI/CD deployments.
+
+---
+
+**77. How does CloudFront signed URLs vs signed cookies work for private content?**
+
+Both mechanisms restrict access to CloudFront-distributed content to authorized users only, using a **key pair** (trusted key group) to sign tokens.
+
+**Signed URLs**:
+- One signed URL per file — embeds expiry, IP restrictions, and signature in the URL query string.
+- Best for: individual file access (e.g., a single video download, a one-time link).
+- Works with any HTTP client; easy to share a single resource.
+
+**Signed Cookies**:
+- A single set of cookies grants access to **multiple files** matching a path pattern.
+- Best for: authenticated users accessing a library of content (e.g., all videos in a subscription, a whole web app behind auth).
+- Transparent to the user — no URL modification needed; cookies are sent automatically by the browser.
+
+| Aspect | Signed URL | Signed Cookie |
+|---|---|---|
+| Scope | Single object | Multiple objects (path pattern) |
+| Use case | One-time/per-file links | Authenticated session access |
+| URL appearance | Modified (query params) | Clean URLs |
+| RTMP streaming | Supported | Not supported |
+
+Both support **canned policies** (simple expiry) and **custom policies** (expiry + IP + date range). Use trusted key groups (not root account key pairs) for signing.
