@@ -1,10 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using StateDesignPattern.States;
 
-namespace StateDesignPattern
+namespace StateDesignPattern.Context
 {
     public class OrderProcessing
     {
@@ -23,6 +19,11 @@ namespace StateDesignPattern
         public void NextState()
         {
             _orderState.NextState(this);
+        }
+
+        public void CancelOrder()
+        {
+            _orderState.CancelOrder(this);
         }
     }
 }
