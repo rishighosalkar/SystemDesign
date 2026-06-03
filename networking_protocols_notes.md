@@ -135,8 +135,8 @@ Understanding networking protocols is fundamental for system design interviews. 
 
 #### Query Process (Recursive Resolution)
 1. **Local resolver**: Your device queries the local DNS resolver
-2. **Root nameserver**: Resolver queries root nameserver (knows TLD servers)
-3. **TLD nameserver**: TLD server provides authoritative nameserver address
+2. **Root nameserver**: Resolver queries root nameserver (knows TLD servers). The root server directs the query to the correct TLD server based on the domain's extension (like .com).
+3. **TLD nameserver**: They manage the information for all domains that share a common extension (e.g., all .com or .net websites). TLD server points the query to the specific Authoritative Name Server for that exact domain
 4. **Authoritative nameserver**: Returns the IP address for the domain
 5. **Response**: IP address returned to your device
 
