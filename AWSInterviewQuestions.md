@@ -1423,3 +1423,599 @@ Answer:
 - Use multiple MessageGroupIds to parallelize (each group is an independent ordered stream)
 - Enable high-throughput mode (up to 30,000 TPS with batching)
 - Partition workload across multiple FIFO queues if needed
+
+---
+
+**Q46. Explain SQS visibility timeout, message retention, and dead letter queues.**
+
+**Visibility Timeout:**
+When a consumer picks up a message, SQS hides it from other consumers for a configurable duration (default 30s, max 12 hours). If the consumer processes and deletes it within that window, it's gone. If not (e.g., consumer crashes), the message becomes visible again and can be reprocessed. You should set the visibility timeout slightly longer than your expected processing time.
+
+**Message Retention:**
+SQS retains messages for 1 minute to 14 days (default 4 days). After that, messages are automatically deleted whether consumed or not.
+
+**Dead Letter Queue (DLQ):**
+A separate SQS queue where messages are sent after exceeding the `maxReceiveCount` (i.e., failed processing N times). DLQs help isolate poison-pill messages for debugging without blocking the main queue. You configure a redrive policy on the source queue pointing to the DLQ.
+
+---
+
+**Q47. What is SNS fan-out pattern? Walk through an architecture using SNS + multiple SQS subscribers.**
+
+**Fan-out** means publishing one message to SNS and having it delivered simultaneously to multiple subscribers.
+
+**Architecture:**
+1. Producer publishes a single message to an SNS topic (e.g., `order-placed`).
+2. SNS topic has 3 SQS queue subscriptions:
+   - `inventory-queue` → Inventory service decrements stock
+   - `email-queue` → Notification service sends confirmation email
+   - `analytics-queue` → Analytics service logs the event
+3. Each SQS queue decouples the downstream service, allowing independent scaling and retry logic.
+
+**Benefits:** Decoupling, parallel processing, each subscriber can fail independently without affecting others.
+
+---
+
+**Q48. How does SQS long polling differ from short polling? Why is long polling preferred?**
+
+| | Short Polling | Long Polling |
+|---|---|---|
+| Behavior | Returns immediately, even if queue is empty | Waits up to 20s for a message to arrive |
+| Empty responses | Frequent | Rare |
+| Cost | Higher (more API calls) | Lower |
+| Latency | Slightly lower on busy queues | Negligible difference |
+
+**Why long polling is preferred:**
+- Reduces the number of empty `ReceiveMessage` API calls → lower cost
+- Reduces CPU/network overhead on the consumer side
+- Messages are returned as soon as they arrive within the wait window
+
+Enable via `WaitTimeSeconds=20` on the `ReceiveMessage` call or at the queue level.
+
+---
+
+**Q49. When would you choose SQS vs SNS vs EventBridge?**
+
+| Service | Best For |
+|---|---|
+| **SQS** | Decoupled async processing, task queues, load leveling, exactly-once or at-least-once delivery to a single consumer group |
+| **SNS** | Fan-out to multiple subscribers (SQS, Lambda, HTTP), push-based pub/sub, simple topic-based routing |
+| **EventBridge** | Event-driven architectures, routing events based on content/rules, SaaS integrations, scheduled events (cron), cross-account/cross-region event buses |
+
+**Rule of thumb:**
+- Point-to-point queue → SQS
+- Broadcast to many → SNS
+- Complex routing / event-driven microservices / SaaS → EventBridge
+
+---
+
+**Q50. What is Amazon MQ? When would you use it over SQS/SNS?**
+
+Amazon MQ is a managed message broker service supporting **Apache ActiveMQ** and **RabbitMQ** protocols (AMQP, MQTT, STOMP, OpenWire, WebSocket).
+
+**Use Amazon MQ when:**
+- Migrating an on-premises application that already uses JMS, AMQP, MQTT, or STOMP — you want a lift-and-shift without rewriting messaging code.
+- Your application requires protocol-level compatibility with standard broker APIs.
+
+**Use SQS/SNS when:**
+- Building cloud-native applications from scratch.
+- You need massive scale, serverless operation, and tight AWS integration.
+- No legacy protocol requirements.
+
+**Key difference:** SQS/SNS are AWS-proprietary, infinitely scalable, and serverless. Amazon MQ is protocol-compatible but requires broker instance sizing and management.
+
+---
+
+**Q51. How does DynamoDB partition key design affect performance? What is a hot partition?**
+
+DynamoDB distributes data across partitions based on the partition key hash. Each partition supports up to **3,000 RCUs** and **1,000 WCUs**.
+
+**Good partition key design:**
+- High cardinality (many distinct values) — e.g., `userId`, `orderId`
+- Evenly distributes reads and writes across partitions
+
+**Hot Partition:**
+Occurs when too many requests target the same partition key value (e.g., using `date` as a partition key means all today's writes go to one partition). This causes throttling even if overall table capacity is sufficient.
+
+**Mitigations:**
+- Use high-cardinality keys
+- Add a random suffix/prefix to spread writes (write sharding)
+- Use composite keys to distribute load
+
+---
+
+**Q52. Explain DynamoDB read consistency — eventually consistent vs strongly consistent reads.**
+
+**Eventually Consistent Reads (default):**
+- DynamoDB returns data from any of the replica nodes.
+- Data may be slightly stale (replication lag of typically under a second).
+- Costs **0.5 RCU per 4KB**.
+- Best for most read-heavy workloads where slight staleness is acceptable.
+
+**Strongly Consistent Reads:**
+- DynamoDB reads from the leader node, guaranteeing the most up-to-date data.
+- Costs **1 RCU per 4KB** (double the cost).
+- Use when your application requires read-after-write consistency (e.g., financial balances, inventory counts).
+- Not available on Global Secondary Indexes (GSIs).
+
+---
+
+**Q53. What is DynamoDB DAX and when would you use it?**
+
+**DAX (DynamoDB Accelerator)** is a fully managed, in-memory cache for DynamoDB that delivers microsecond read latency (vs single-digit milliseconds for DynamoDB).
+
+**How it works:**
+- DAX sits in front of DynamoDB as a write-through cache.
+- Reads are served from cache; on a cache miss, DAX fetches from DynamoDB and caches the result.
+- API-compatible — minimal code changes needed.
+
+**Use DAX when:**
+- Read-heavy workloads with repeated reads of the same items (e.g., product catalog, leaderboards)
+- Microsecond latency is required
+- You want to reduce RCU consumption and cost
+
+**Don't use DAX when:**
+- Write-heavy workloads (DAX doesn't cache writes in a way that reduces WCUs)
+- Strongly consistent reads are required (DAX only supports eventually consistent)
+- Data changes frequently and cache hit rate would be low
+
+---
+
+**Q54. Explain DynamoDB Streams. What use cases does it enable?**
+
+**DynamoDB Streams** captures a time-ordered sequence of item-level changes (INSERT, MODIFY, REMOVE) in a table. Records are retained for 24 hours.
+
+**Stream view types:**
+- `KEYS_ONLY` — only key attributes
+- `NEW_IMAGE` — entire item after change
+- `OLD_IMAGE` — entire item before change
+- `NEW_AND_OLD_IMAGES` — both before and after
+
+**Use cases:**
+- **Change Data Capture (CDC):** Trigger downstream processing on data changes
+- **Lambda triggers:** Invoke Lambda on every write for real-time processing
+- **Cross-region replication:** Foundation for DynamoDB Global Tables
+- **Audit logging:** Record all changes to items
+- **Search indexing:** Sync changes to Elasticsearch/OpenSearch
+- **Event sourcing:** Rebuild state from the stream of changes
+
+---
+
+**Q55. What is the difference between DynamoDB on-demand and provisioned capacity modes?**
+
+| | On-Demand | Provisioned |
+|---|---|---|
+| Capacity | Auto-scales instantly | You set RCU/WCU manually (or with Auto Scaling) |
+| Pricing | Pay per request | Pay for provisioned capacity regardless of usage |
+| Best for | Unpredictable/spiky traffic, new tables | Predictable, steady workloads |
+| Cost at scale | More expensive at high, consistent throughput | More cost-efficient at steady load |
+| Throttling | No throttling (within account limits) | Throttled if you exceed provisioned capacity |
+
+**Rule of thumb:** Start with on-demand for new applications. Switch to provisioned once traffic patterns are understood to optimize cost.
+
+---
+
+**Q56. How do you model a one-to-many relationship in DynamoDB? (single-table design)**
+
+In single-table design, you store multiple entity types in one table using a generic `PK` and `SK` (sort key) pattern.
+
+**Example: Customer → Orders**
+
+| PK | SK | Attributes |
+|---|---|---|
+| `CUSTOMER#123` | `METADATA` | name, email |
+| `CUSTOMER#123` | `ORDER#2024-001` | total, status |
+| `CUSTOMER#123` | `ORDER#2024-002` | total, status |
+
+**Access patterns:**
+- Get customer: `PK = CUSTOMER#123, SK = METADATA`
+- Get all orders for customer: `PK = CUSTOMER#123, SK begins_with ORDER#`
+- Get specific order: `PK = CUSTOMER#123, SK = ORDER#2024-001`
+
+**Key principle:** Design your keys around your access patterns, not your entity relationships. Use `begins_with`, `between`, and `SK` range queries to fetch related items efficiently in a single query.
+
+---
+
+**Q57. What are Global Secondary Indexes vs Local Secondary Indexes? Trade-offs?**
+
+**Local Secondary Index (LSI):**
+- Same partition key as the base table, different sort key
+- Must be created at table creation time (cannot add later)
+- Shares the partition's read/write capacity with the base table
+- Supports strongly consistent reads
+- Max 5 per table
+- Max 10GB per partition key value
+
+**Global Secondary Index (GSI):**
+- Different partition key and/or sort key from the base table
+- Can be added or deleted at any time
+- Has its own separate provisioned/on-demand capacity
+- Only eventually consistent reads
+- Max 20 per table (default)
+
+**Trade-offs:**
+
+| | LSI | GSI |
+|---|---|---|
+| Flexibility | Low (fixed at creation) | High (add anytime) |
+| Consistency | Strong or eventual | Eventual only |
+| Capacity | Shared with table | Independent |
+| Use case | Alternate sort on same partition | Entirely new access pattern |
+
+**Prefer GSIs** in most cases due to flexibility. Use LSIs only when you need strongly consistent alternate sort queries within a partition.
+
+---
+
+**Q58. What is the difference between RDS Multi-AZ and Read Replicas?**
+
+**Multi-AZ:**
+- Primary purpose: **High availability and failover**
+- Synchronous replication to a standby instance in another AZ
+- Standby is not readable — it's purely for failover
+- Automatic failover in ~1–2 minutes if primary fails
+- No performance benefit for reads
+
+**Read Replicas:**
+- Primary purpose: **Read scaling**
+- Asynchronous replication to one or more replica instances
+- Replicas are readable — offload read traffic from primary
+- Can be in same AZ, different AZ, or different region (cross-region replicas)
+- Can be promoted to standalone DB (useful for DR)
+- Up to 5 replicas for MySQL/PostgreSQL/MariaDB; 15 for Aurora
+
+**Summary:** Multi-AZ = HA/DR. Read Replicas = read scalability. You can and should use both together for production workloads.
+
+---
+
+**Q59. How does Aurora differ from standard RDS? Explain Aurora's shared storage architecture.**
+
+**Aurora** is AWS's cloud-native relational database, compatible with MySQL and PostgreSQL but rebuilt from the ground up for the cloud.
+
+**Key differences from standard RDS:**
+
+| | Standard RDS | Aurora |
+|---|---|---|
+| Storage | EBS volume per instance | Shared distributed storage |
+| Replication | Block-level replication | Storage-level replication |
+| Failover time | ~1–2 min | ~30 seconds |
+| Read replicas | Up to 5 | Up to 15 |
+| Storage scaling | Manual | Auto-grows in 10GB increments up to 128TB |
+| Performance | Baseline | Up to 5x MySQL, 3x PostgreSQL |
+
+**Aurora Shared Storage Architecture:**
+- Storage is decoupled from compute. All DB instances (writer + readers) share the same distributed storage layer.
+- Data is replicated **6 ways across 3 AZs** (2 copies per AZ) automatically.
+- Only **redo logs** are written to storage (not full data pages), reducing write amplification.
+- A read replica can be promoted to writer instantly since it already has access to the same storage — no data copy needed.
+- Quorum-based reads/writes: tolerates loss of 2 copies for writes, 3 copies for reads.
+
+---
+
+**Q60. What is Aurora Serverless v2? How does it differ from provisioned Aurora?**
+
+**Aurora Serverless v2** automatically scales Aurora capacity up and down based on actual workload demand, measured in **Aurora Capacity Units (ACUs)**.
+
+**How it works:**
+- You set a min and max ACU range (e.g., 0.5 to 128 ACUs).
+- Aurora scales in fine-grained increments (as small as 0.5 ACU) within seconds.
+- You pay per ACU-second consumed, not for idle capacity.
+
+**Differences from Provisioned Aurora:**
+
+| | Provisioned Aurora | Aurora Serverless v2 |
+|---|---|---|
+| Capacity | Fixed instance size (e.g., r6g.large) | Dynamic ACU range |
+| Scaling | Manual or slow Auto Scaling | Near-instant, fine-grained |
+| Cost model | Per instance-hour | Per ACU-second |
+| Best for | Steady, predictable workloads | Variable, spiky, or dev/test workloads |
+| Multi-AZ | Yes | Yes |
+| Read replicas | Yes | Yes (can mix with provisioned) |
+| Scale to zero | No | Yes (min 0 ACU — pauses when idle) |
+
+**When to use Serverless v2:**
+- Unpredictable or bursty traffic (e.g., SaaS multi-tenant apps)
+- Dev/test environments (scale to zero when not in use)
+- Applications with infrequent but sudden spikes
+- When you want to avoid over-provisioning costs
+
+---
+
+
+**61. How do you handle schema migrations in RDS/Aurora with zero downtime?**
+
+Use backward-compatible, multi-phase migrations:
+
+- **Expand-Contract pattern**: Add new columns/tables first (expand), deploy app code that handles both old and new schema, then remove old columns (contract) in a later release.
+- **Aurora Blue/Green Deployments**: AWS-native feature that creates a staging environment, applies schema changes, then promotes with minimal cutover (typically < 1 min).
+- **Online DDL**: MySQL/Aurora supports `ALTER TABLE ... ALGORITHM=INPLACE` for many operations without locking. Use `pt-online-schema-change` or `gh-ost` for large tables.
+- **Read Replica promotion**: Apply migration to a read replica, promote it, then switch traffic.
+- **Feature flags**: Gate new schema-dependent code paths until migration is fully rolled out.
+
+Key rule: never deploy code and schema changes simultaneously — always decouple them.
+
+---
+
+**62. What is ECS? Compare ECS with EC2 launch type vs Fargate launch type.**
+
+Amazon ECS (Elastic Container Service) is a fully managed container orchestration service for running Docker containers on AWS.
+
+| Aspect | EC2 Launch Type | Fargate Launch Type |
+|---|---|---|
+| Infrastructure | You manage EC2 instances (patching, scaling, capacity) | AWS manages all underlying infrastructure |
+| Cost model | Pay for EC2 instances regardless of utilization | Pay per vCPU/memory per second of task runtime |
+| Control | Full OS-level access, custom AMIs, GPU support | No host access; isolated per-task |
+| Scaling | Must scale EC2 cluster + tasks separately | Tasks scale independently, no cluster management |
+| Best for | High-density workloads, cost optimization at scale, GPU | Serverless containers, variable/bursty workloads, simplicity |
+
+---
+
+**63. How does ECS service discovery work? How does it integrate with Route 53?**
+
+ECS Service Discovery uses **AWS Cloud Map** backed by **Route 53 private hosted zones**:
+
+1. When a service is created with service discovery enabled, ECS registers each task as a **Route 53 DNS record** (A or SRV) in a private hosted zone.
+2. As tasks start/stop, ECS automatically registers/deregisters DNS records via Cloud Map.
+3. Other services resolve the service by DNS name (e.g., `backend.local`) — Route 53 returns the IPs of healthy task instances.
+4. Health checks can be configured at the Cloud Map level to remove unhealthy tasks from DNS.
+
+This enables service-to-service communication without a load balancer for internal microservices.
+
+---
+
+**64. ECS vs EKS — when would you choose one over the other?**
+
+| Factor | Choose ECS | Choose EKS |
+|---|---|---|
+| Kubernetes requirement | No K8s needed | Need K8s ecosystem (Helm, operators, CRDs) |
+| Operational complexity | Simpler, AWS-native | More complex, steeper learning curve |
+| Portability | AWS-specific | Portable across clouds/on-prem |
+| Ecosystem | AWS integrations (ALB, IAM, CloudWatch) are tighter | Rich OSS ecosystem (Istio, Prometheus, ArgoCD) |
+| Team expertise | Smaller teams, AWS-focused | Teams with existing K8s expertise |
+| Multi-cloud/hybrid | Not ideal | Strong fit |
+
+Choose ECS for simplicity and tight AWS integration. Choose EKS when you need Kubernetes-native tooling, portability, or have existing K8s workflows.
+
+---
+
+**65. How do you manage secrets for ECS tasks? (Secrets Manager integration with task definitions)**
+
+Reference secrets directly in the ECS task definition — never hardcode them:
+
+```json
+"secrets": [
+  {
+    "name": "DB_PASSWORD",
+    "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789:secret:prod/db-password"
+  }
+]
+```
+
+- ECS injects the secret value as an **environment variable** at task startup.
+- You can also reference **SSM Parameter Store** parameters using the same `secrets` field.
+- The **task execution IAM role** must have `secretsmanager:GetSecretValue` permission.
+- Secrets are fetched at task launch — to pick up rotated secrets, tasks must be restarted (or use the SDK inside the app for dynamic refresh).
+
+---
+
+**66. What is Amazon Kinesis Data Streams vs Kinesis Data Firehose? When do you use each?**
+
+| Aspect | Kinesis Data Streams (KDS) | Kinesis Data Firehose |
+|---|---|---|
+| Purpose | Real-time custom stream processing | Managed delivery to destinations |
+| Consumers | Custom (Lambda, KCL, Flink) | Fully managed — no consumer code needed |
+| Latency | ~70ms (real-time) | 60s–900s buffer (near real-time) |
+| Retention | 1–365 days | No retention — deliver and forget |
+| Scaling | Manual shard management | Auto-scales |
+| Destinations | Any custom consumer | S3, Redshift, OpenSearch, Splunk, HTTP |
+| Use when | Custom processing, fan-out, replay needed | Simple ETL/delivery pipeline to a data store |
+
+Use KDS when you need real-time processing with custom logic. Use Firehose when you just need to land data in S3/Redshift/OpenSearch with minimal code.
+
+---
+
+**67. How does Kinesis shard capacity work? How do you handle hot shards?**
+
+Each shard provides:
+- **1 MB/s write** (1,000 records/s)
+- **2 MB/s read** per consumer
+
+**Hot shards** occur when a partition key has high cardinality skew (e.g., all records use the same key), concentrating traffic on one shard.
+
+Mitigation strategies:
+- **Randomize/distribute partition keys** — use high-cardinality keys (user ID, UUID) instead of static values.
+- **Shard splitting** — split the hot shard into two via the `SplitShard` API.
+- **Enhanced fan-out** — gives each consumer its own 2 MB/s read throughput, reducing read contention.
+- **Aggregation** — use KPL (Kinesis Producer Library) to batch small records into single Kinesis records.
+- Monitor with CloudWatch metrics: `WriteProvisionedThroughputExceeded`, `ReadProvisionedThroughputExceeded`.
+
+---
+
+**68. What is the difference between Kinesis and SQS for stream processing?**
+
+| Aspect | Kinesis Data Streams | SQS |
+|---|---|---|
+| Ordering | Per-shard ordering guaranteed | Standard: no order; FIFO: per message group |
+| Replay | Yes — data retained up to 365 days | No — message deleted after consumption |
+| Consumers | Multiple consumers read same data independently | Message consumed by one consumer (unless SNS fan-out) |
+| Throughput | Shard-based, provisioned | Virtually unlimited, fully managed |
+| Latency | ~70ms | Milliseconds to seconds |
+| Use case | Real-time analytics, event sourcing, log ingestion | Task queues, decoupling microservices, job processing |
+| Message size | Max 1 MB | Max 256 KB |
+
+Use Kinesis when you need ordered, replayable, multi-consumer streams. Use SQS for decoupled task/job queues where each message is processed once.
+
+---
+
+**69. What is Amazon OpenSearch Service (Elasticsearch)? What are typical use cases?**
+
+Amazon OpenSearch Service is a managed service for deploying, operating, and scaling OpenSearch (forked from Elasticsearch) and Kibana/OpenSearch Dashboards clusters.
+
+Typical use cases:
+- **Log analytics** — ingest and search application/infrastructure logs (e.g., from Kinesis Firehose or Logstash)
+- **Full-text search** — product search, document search with relevance ranking
+- **Security analytics** — SIEM, threat detection on log data
+- **Observability** — traces, metrics, and log correlation
+- **E-commerce search** — faceted search, autocomplete, fuzzy matching
+- **Clickstream analytics** — real-time user behavior analysis
+
+---
+
+**70. How does OpenSearch handle indexing and search? What is an inverted index?**
+
+**Indexing**: When a document is ingested, OpenSearch analyzes text fields (tokenization, lowercasing, stemming) and builds an **inverted index** per field.
+
+**Inverted index**: A data structure that maps each unique term to the list of documents containing that term — the inverse of a document→words mapping.
+
+Example:
+```
+Term       → Document IDs
+"aws"      → [doc1, doc3, doc5]
+"kinesis"  → [doc2, doc3]
+"lambda"   → [doc1, doc4]
+```
+
+**Search**: A query is analyzed the same way as indexed text, terms are looked up in the inverted index, matching document IDs are retrieved, and relevance scores (BM25 by default) are computed to rank results.
+
+OpenSearch distributes index shards across nodes — each shard is a self-contained Lucene index. Queries are broadcast to all shards, results are merged and ranked by the coordinating node.
+
+---
+
+**71. How would you architect a real-time log analytics pipeline using Kinesis + OpenSearch?**
+
+```
+App/Services → Kinesis Data Streams → Lambda (transform/enrich) → Kinesis Firehose → OpenSearch Service → OpenSearch Dashboards
+                                                                        ↓
+                                                                    S3 (backup/replay)
+```
+
+Key design decisions:
+- **Kinesis Data Streams**: ingest high-volume log events with ordering and replay capability.
+- **Lambda**: filter, enrich, or transform records (e.g., parse JSON, add geo-IP, mask PII) before delivery.
+- **Kinesis Firehose**: buffer and batch-deliver to OpenSearch (and S3 as backup). Handles retries and format conversion.
+- **OpenSearch**: index logs with time-based index rotation (daily/weekly) using Index State Management (ISM) to auto-delete old indices.
+- **OpenSearch Dashboards**: visualize logs, create alerts on error rate thresholds.
+- **IAM + VPC**: deploy OpenSearch in a VPC, use fine-grained access control, encrypt at rest and in transit.
+
+---
+
+**72. Redis vs Memcached on ElastiCache — which do you choose and why?**
+
+| Feature | Redis | Memcached |
+|---|---|---|
+| Data structures | Strings, hashes, lists, sets, sorted sets, streams | Strings only |
+| Persistence | RDB snapshots + AOF | None |
+| Replication | Yes (primary + replicas) | No |
+| Cluster mode | Yes (sharding across nodes) | Yes (client-side sharding) |
+| Pub/Sub | Yes | No |
+| Lua scripting | Yes | No |
+| Multi-threading | Single-threaded (Redis 6+ has I/O threads) | Multi-threaded |
+| Use case | Sessions, leaderboards, rate limiting, queues, pub/sub | Simple high-throughput object caching |
+
+**Choose Redis** for almost all use cases — it's more feature-rich. Choose Memcached only if you need pure horizontal scaling of simple key-value caching with multi-threaded performance and don't need persistence or replication.
+
+---
+
+**73. What caching strategies does ElastiCache support? (cache-aside, write-through, write-behind)**
+
+- **Cache-aside (lazy loading)**: App checks cache first; on miss, reads from DB and populates cache. Cache only contains requested data. Risk: cache miss penalty, stale data if TTL not set.
+
+- **Write-through**: On every DB write, app also writes to cache. Cache is always up to date. Risk: write latency increases; cache may hold data that's never read (wasted memory).
+
+- **Write-behind (write-back)**: App writes to cache first; cache asynchronously flushes to DB. Lowest write latency. Risk: data loss if cache node fails before flush; complexity.
+
+- **Read-through**: Cache sits in front of DB; on miss, cache itself fetches from DB (not the app). Simplifies app logic. ElastiCache doesn't natively support this — requires a caching layer/library.
+
+- **TTL-based expiration**: Used with any strategy to bound staleness and manage memory.
+
+Most production systems use **cache-aside** for reads and **write-through** or TTL invalidation for consistency.
+
+---
+
+**74. How does ElastiCache Redis cluster mode work? Explain sharding and replication.**
+
+**Cluster mode disabled**: Single shard — one primary node + up to 5 read replicas. All data on one shard. Vertical scaling only.
+
+**Cluster mode enabled**: Data is partitioned across **up to 500 shards** using consistent hashing on key slots (16,384 total slots divided across shards). Each shard has one primary + up to 5 replicas.
+
+```
+Shard 1 (slots 0–5460):     Primary → Replica1, Replica2
+Shard 2 (slots 5461–10922): Primary → Replica1, Replica2
+Shard 3 (slots 10923–16383):Primary → Replica1, Replica2
+```
+
+- **Replication**: Async replication from primary to replicas within each shard. Replicas serve reads (with eventual consistency) and provide failover.
+- **Failover**: If a primary fails, ElastiCache promotes a replica automatically (Multi-AZ).
+- **Resharding**: You can add/remove shards online — ElastiCache rebalances slots with minimal impact.
+- **Client requirement**: Clients must be cluster-aware (e.g., `redis-py-cluster`, Lettuce) to route commands to the correct shard.
+
+---
+
+**75. What is a CloudFront Origin Access Control (OAC)? How does it secure S3 origins?**
+
+OAC is the modern replacement for Origin Access Identity (OAI). It restricts S3 bucket access so that only CloudFront can fetch objects — direct S3 URL access is blocked.
+
+How it works:
+1. Create an OAC in CloudFront and associate it with the distribution's S3 origin.
+2. CloudFront signs requests to S3 using **SigV4** with the OAC credentials.
+3. Update the S3 bucket policy to allow `s3:GetObject` only from the specific CloudFront distribution's service principal:
+
+```json
+{
+  "Principal": { "Service": "cloudfront.amazonaws.com" },
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::my-bucket/*",
+  "Condition": {
+    "StringEquals": {
+      "AWS:SourceArn": "arn:aws:cloudfront::123456789:distribution/EDFDVBD6EXAMPLE"
+    }
+  }
+}
+```
+
+4. The S3 bucket remains private (no public access). All traffic must go through CloudFront.
+
+OAC advantages over OAI: supports SSE-KMS encrypted buckets, all S3 regions, and POST/PUT methods.
+
+---
+
+**76. How do you invalidate CloudFront cache? What are the cost and latency implications?**
+
+**Invalidation methods**:
+- **API/Console invalidation**: `aws cloudfront create-invalidation --paths "/images/*" "/index.html"`. Propagates to all edge locations globally.
+- **Versioned file names**: Preferred approach — embed version/hash in filenames (e.g., `app.v2.js`). No invalidation needed; old and new versions coexist.
+- **Cache-Control headers**: Set short TTLs (`max-age`) on frequently changing objects at the origin.
+
+**Cost implications**:
+- First **1,000 invalidation paths per month** are free.
+- Beyond that, **$0.005 per path** (a wildcard `/*` counts as one path).
+- Wildcard invalidations are cost-effective but less precise.
+
+**Latency implications**:
+- Invalidation propagation takes **seconds to a few minutes** to reach all edge locations globally.
+- During propagation, some edges may still serve stale content.
+- There is no SLA guarantee on propagation time.
+- Versioned filenames eliminate this uncertainty entirely — preferred for CI/CD deployments.
+
+---
+
+**77. How does CloudFront signed URLs vs signed cookies work for private content?**
+
+Both mechanisms restrict access to CloudFront-distributed content to authorized users only, using a **key pair** (trusted key group) to sign tokens.
+
+**Signed URLs**:
+- One signed URL per file — embeds expiry, IP restrictions, and signature in the URL query string.
+- Best for: individual file access (e.g., a single video download, a one-time link).
+- Works with any HTTP client; easy to share a single resource.
+
+**Signed Cookies**:
+- A single set of cookies grants access to **multiple files** matching a path pattern.
+- Best for: authenticated users accessing a library of content (e.g., all videos in a subscription, a whole web app behind auth).
+- Transparent to the user — no URL modification needed; cookies are sent automatically by the browser.
+
+| Aspect | Signed URL | Signed Cookie |
+|---|---|---|
+| Scope | Single object | Multiple objects (path pattern) |
+| Use case | One-time/per-file links | Authenticated session access |
+| URL appearance | Modified (query params) | Clean URLs |
+| RTMP streaming | Supported | Not supported |
+
+Both support **canned policies** (simple expiry) and **custom policies** (expiry + IP + date range). Use trusted key groups (not root account key pairs) for signing.
