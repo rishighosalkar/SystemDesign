@@ -188,6 +188,30 @@ Client reads user identity from id_token claims
 - Building SSO across your own applications
 - Any time you need to know *who* the user is, not just *what* they can access
 
+### Why OAuth Alone Isn't Enough for Login
+
+Suppose OAuth only gave:
+```
+Access Token = abc123
+```
+
+Your application receives:
+```
+abc123
+```
+
+Questions:
+```
+Who logged in?
+What is their email?
+What is their user id?
+```
+OAuth doesn't define this.
+
+Different providers returned different data.
+
+To solve this, OIDC standardized: ID Token
+
 ---
 
 ## 4. SSO — Single Sign-On
@@ -200,6 +224,24 @@ A mechanism that allows a user to authenticate **once** and gain access to **mul
 User → App A (not logged in) → redirected to Identity Provider (IdP)
 User logs in at IdP → IdP creates session + issues token/assertion
 User → App B → IdP sees existing session → issues token without re-login
+
+User → AppA
+      ↓
+Redirect to Identity Provider
+      ↓
+Login once
+      ↓
+Back to AppA
+
+Later
+
+User → AppB
+      ↓
+Identity Provider already knows user
+      ↓
+No login screen
+      ↓
+Instant access
 ```
 
 ### SSO Protocols
