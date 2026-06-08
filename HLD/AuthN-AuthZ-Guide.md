@@ -105,7 +105,19 @@ Service A → calls Service B API with token
 - Prevents authorization code interception attacks
 - Client generates `code_verifier` + `code_challenge` (SHA256 hash)
 - Auth server validates the verifier when exchanging the code
+```
+Browser/App
+    ↓
+Google Authorization Server
+    ↓
+Authorization Code
+    ↓
+Browser/App directly exchanges code
+    ↓
+Access Token
 
+In this version, there may not be a backend involved in the token exchange. Instead, the client proves it is the same party that initiated the login using a PKCE code verifier.
+```
 ### Token Types
 - **Access Token:** Short-lived, used to access APIs (JWT or opaque)
 - **Refresh Token:** Long-lived, used to get new access tokens
