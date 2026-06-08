@@ -78,6 +78,20 @@ User → Client → Authorization Server (login + consent)
 Auth Server → returns authorization code to redirect URI
 Client → exchanges code for access token (server-to-server)
 Client → uses access token to call Resource Server
+
+1. Browser
+      ↓
+2. Google Authorization Server
+      ↓
+3. Browser receives Authorization Code via redirect
+      ↓
+4. Browser sends Authorization Code to Your Backend
+      ↓
+5. Your Backend sends Authorization Code to Google Token Endpoint
+      ↓
+6. Google returns Access Token (and possibly Refresh Token, ID Token)
+      ↓
+7. Your Backend uses Access Token to call Google APIs
 ```
 
 **Client Credentials Flow** (machine-to-machine)
