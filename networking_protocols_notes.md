@@ -253,6 +253,18 @@ Understanding networking protocols is fundamental for system design interviews. 
 7. **Finished**: Both sides send encrypted verification message
 8. **Encrypted communication**: All subsequent data encrypted with symmetric key
 
+##### In detail steps in a TLS Handshake
+
+1. **Client Hello**: The client initiates the handshake by sending a "hello" message to the server. This message includes the supported TLS versions, cipher suites, and a random string known as the "client random".
+2. **Server Hello**: The server responds with its own "hello" message, which includes the chosen TLS version, cipher suite, and another random string called the "server random." The server also sends its SSL certificate.
+3. **Authentication**: The client verifies the server's SSL certificate with the certificate authority (CA) that issued it. This step confirms the server's identity.
+4. **Premaster Secret**: The client generates a random string called the "premaster secret," encrypts it with the server's public key (obtained from the SSL certificate), and sends it to the server.
+5. **Private Key Used**: The server decrypts the premaster secret using its private key.
+6. **Session Keys Created**: Both the client and server generate session keys from the client random, server random, and premaster secret. These keys are used for symmetric encryption during the session.
+7. **Client Finished**: The client sends a "finished" message encrypted with a session key.
+8. **Server Finished**: The server responds with a "finished" message encrypted with a session key.
+9. **Secure Symmetric Encryption Achieved**: The handshake is complete, and the client and server can now communicate securely using the session keys.
+
 #### TLS 1.3 Improvements
 - **Faster handshake**: 1 round-trip (vs 2 for TLS 1.2)
 - **Forward secrecy**: Ephemeral keys ensure past sessions can't be decrypted
