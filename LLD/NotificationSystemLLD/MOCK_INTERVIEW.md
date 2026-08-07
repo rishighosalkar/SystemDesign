@@ -90,15 +90,17 @@ USER
   - Has a NotificationPreference
 
 SUBSCRIPTION
-  - Represents a user's opt-in for a specific NotificationType on a specific Channel
-  - Example: User 42 wants ORDER_DELIVERED via EMAIL and SMS
-  - Fields: user_id, notification_type, channel, is_active
+  - Represents a user's opt-in for a notification category
+  - Subscribing to a category covers ALL event types within it
+  - Example: User subscribes to OrderUpdates → gets OrderPlaced, OrderShipped,
+             OrderDelivered, OrderCancelled automatically
+  - Fields: user_id, category, is_active
 
 NOTIFICATIONPREFERENCE
   - Global channel-level opt-in/out
-  - Example: User has globally disabled SMS
+  - Controls WHICH channels the user wants to receive notifications on
+  - Example: User enabled Email + Push, disabled SMS
   - Fields: user_id, channel, opt_in (bool)
-  - This is a two-level filter: subscription AND global opt-in
 
 NOTIFICATION
   - Represents a single notification instance
@@ -111,17 +113,16 @@ MESSAGETEMPLATE
   - Keyed by (NotificationType, Channel)
   - Email has Subject + Body, SMS has only Body
 
-The two-level filtering is important:
-  1. Check subscription: is user subscribed to this type on this channel?
-  2. Check preference: has user globally enabled this channel?
-  Only send if BOTH are true.
+The two-level filtering:
+  Level 1 (Subscription): Is user subscribed to the category this event belongs to?
+    → OrderDelivered belongs to OrderUpdates → subscribed? YES/NO
+  Level 2 (Preference):   Which channels has user globally enabled?
+    → Return channels where ChannelOptIn = true
 
 Example:
-  User subscribed to OrderDelivered on SMS? YES
-  User has SMS globally enabled? NO
-  → Don't send SMS
-
-This gives users fine-grained control."
+  User subscribed to OrderUpdates? YES
+  User's enabled channels: Email=true, SMS=true, Push=false, InApp=true
+  → Send via Email, SMS, InApp (not Push)"
 
 INTERVIEWER:
 "Good. How do you handle the different channels?"
@@ -213,12 +214,12 @@ Step 1: Event Source
 Step 2: NotificationService - Fetch & Filter
   - Fetch User 1 from repository
   - Call preferenceService.GetActiveChannels(user, OrderDelivered)
-    • Check subscriptions: User 1 subscribed to OrderDelivered on Email? YES
-    • Check preference: User 1 has Email opt-in? YES
-    • Return [Channel.Email]
+    • Map OrderDelivered → NotificationCategory.OrderUpdates
+    • Check subscription: User 1 subscribed to OrderUpdates? YES
+    • Check preferences: Email=true, SMS=true, Push=false, InApp=true
+    • Return [Email, SMS, InApp]
   
-  Note: If user was also subscribed to SMS but had SMS globally disabled,
-  SMS would be filtered out here.
+  Note: Push is filtered out because user has it globally disabled in preferences.
 
 Step 3: Create Notification
   notification = new Notification

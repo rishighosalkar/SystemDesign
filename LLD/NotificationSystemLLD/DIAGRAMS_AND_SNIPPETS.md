@@ -83,8 +83,8 @@ IRetryPolicy
 
 IUserPreferenceService
   + GetActiveChannels(user, notificationType): IEnumerable<Channel>
-  + Subscribe(userId, type, channel): void
-  + Unsubscribe(userId, type, channel): void
+  + Subscribe(userId, category): void
+  + Unsubscribe(userId, category): void
   + UpdateChannelOptIn(userId, channel, optIn): void
 
 IUserRepository
@@ -134,8 +134,8 @@ ExponentialBackoffRetryPolicy : IRetryPolicy
 UserPreferenceService : IUserPreferenceService
   - _userRepo: IUserRepository
   + GetActiveChannels(user, notificationType): IEnumerable<Channel>
-  + Subscribe(userId, type, channel): void
-  + Unsubscribe(userId, type, channel): void
+  + Subscribe(userId, category): void
+  + Unsubscribe(userId, category): void
   + UpdateChannelOptIn(userId, channel, optIn): void
 
 NotificationService
@@ -254,12 +254,18 @@ USERPREFERENCESERVICE.GETACTIVECHANNELS() — TWO-LEVEL FILTER
 
 public IEnumerable<Channel> GetActiveChannels(User user, NotificationType notificationType)
 {
-    return user.Subscriptions
-        .Where(s => s.NotificationType == notificationType
-                 && s.IsActive                                    // Level 1: subscription
-                 && user.Preference.ChannelOptIn.GetValueOrDefault(s.Channel, false))  // Level 2: opt-in
-        .Select(s => s.Channel)
-        .Distinct();
+    // Level 1: map event type → category, check subscription
+    var category = NotificationCategoryMap.GetCategory(notificationType);
+    var isSubscribed = user.Subscriptions
+        .Any(s => s.Category == category && s.IsActive);
+
+    if (!isSubscribed)
+        return [];
+
+    // Level 2: return only channels the user has globally enabled
+    return user.Preference.ChannelOptIn
+        .Where(kv => kv.Value)
+        .Select(kv => kv.Key);
 }
 
 TEMPLATERENDERER.RENDER() — PLACEHOLDER SUBSTITUTION

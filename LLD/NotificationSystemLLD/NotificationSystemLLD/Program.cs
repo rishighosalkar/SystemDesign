@@ -14,6 +14,8 @@ var templateRepo     = new InMemoryTemplateRepository();
 var notificationRepo = new InMemoryNotificationRepository();
 
 // ─── Seed a user ─────────────────────────────────────────────────────────────
+// Alice has subscribed to OrderUpdates (one subscription covers all order events).
+// She has Email + SMS enabled, Push disabled globally via preferences.
 var user = new User
 {
     Id          = 1,
@@ -32,11 +34,11 @@ var user = new User
             [Channel.InApp] = true
         }
     },
+    // One subscription covers OrderPlaced, OrderShipped, OrderDelivered, OrderCancelled
     Subscriptions =
     [
-        new() { SubscriptionId = 1, UserId = 1, NotificationType = NotificationType.OrderDelivered, Channel = Channel.Email, IsActive = true },
-        new() { SubscriptionId = 2, UserId = 1, NotificationType = NotificationType.OrderDelivered, Channel = Channel.Sms,   IsActive = true },
-        new() { SubscriptionId = 3, UserId = 1, NotificationType = NotificationType.OrderDelivered, Channel = Channel.Push,  IsActive = true },  // subscribed but opt-in=false
+        new() { SubscriptionId = 1, UserId = 1, Category = NotificationCategory.OrderUpdates, IsActive = true },
+        new() { SubscriptionId = 2, UserId = 1, Category = NotificationCategory.Otp,          IsActive = true },
     ]
 };
 userRepo.Save(user);
@@ -65,6 +67,8 @@ var notificationService = new NotificationSystemLLD.Services.NotificationService
     userRepo, preferenceService, renderer, queue, notificationRepo);
 
 // ─── Sample Flow: ORDER_DELIVERED notification ────────────────────────────────
+// Alice subscribed to OrderUpdates → she gets notified for OrderDelivered.
+// Push is disabled globally → only Email, SMS, InApp are sent.
 Console.WriteLine("=== ORDER_DELIVERED Event Received ===\n");
 
 notificationService.Send(

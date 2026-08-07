@@ -8,7 +8,7 @@ NOTIFICATION SYSTEM — LLD INTERVIEW PREPARATION NOTES
 
 Design a notification system that:
 - Sends notifications across multiple channels (Email, SMS, Push, In-App)
-- Respects user preferences and subscriptions
+- Respects user subscriptions (category-level) and channel preferences
 - Handles failures gracefully with retries
 - Tracks notification lifecycle
 - Is extensible (easy to add new channels)
@@ -19,8 +19,9 @@ Scope: Single service, not distributed. Focus on clean OOP design.
 2. FUNCTIONAL REQUIREMENTS
 ================================================================================
 
-✓ Users subscribe to notification types per channel
-✓ Users manage global channel preferences (opt-in/out)
+✓ Users subscribe to notification categories (OrderUpdates, PaymentAlerts, Otp)
+  → Subscribing to a category covers ALL event types within it
+✓ Users manage global channel preferences (opt-in/out per channel)
 ✓ Support 4 channels: Email, SMS, Push, In-App
 ✓ Notifications have priority levels: CRITICAL, HIGH, LOW
 ✓ Templates are channel-specific with placeholder substitution
@@ -47,7 +48,7 @@ Event Source (Order Service, Payment Service, etc.)
     ↓
 NotificationService (Orchestrator)
     ├─ Fetch user
-    ├─ Get active channels (subscription + preference filter)
+    ├─ Get active channels (subscription category check + channel preference filter)
     ├─ Create Notification objects (Status = QUEUED)
     ↓
 TemplateRenderer
@@ -80,21 +81,31 @@ USER
     - Preference (NotificationPreference)
 
 SUBSCRIPTION
-  Purpose: User's opt-in for a specific NotificationType on a specific Channel
+  Purpose: User's opt-in for a notification category.
+           Subscribing to a category means receiving ALL event types within it.
   Fields:
     - SubscriptionId (int)
     - UserId (int)
-    - NotificationType (enum)
-    - Channel (enum)
+    - Category (NotificationCategory enum)
     - IsActive (bool)
-  Example: User 42 wants ORDER_DELIVERED via EMAIL and SMS
+  Example: User subscribes to OrderUpdates → gets OrderPlaced, OrderShipped,
+           OrderDelivered, OrderCancelled automatically.
+
+NOTIFICATIONPREFERENCE
+  Purpose: Global channel-level opt-in/out for a user.
+           Controls WHICH channels the user wants to receive notifications on.
+  Fields:
+    - UserId (int)
+    - ChannelOptIn (Dictionary<Channel, bool>)
+  Example: User enabled Email + Push, disabled SMS → all subscribed categories
+           are delivered only via Email and Push.
 
 NOTIFICATION
   Purpose: Represents a single notification instance to be sent
   Fields:
     - NotificationId (int)
     - UserId (int)
-    - NotificationType (enum)
+    - NotificationType (enum) — the specific event (OrderDelivered, PaymentFailed, etc.)
     - Priority (enum)
     - Channel (enum)
     - Payload (Dictionary<string, string>) — template variables
@@ -103,13 +114,6 @@ NOTIFICATION
     - Status (enum)
     - RetryCount (int)
     - CreatedAt (DateTime)
-
-NOTIFICATIONPREFERENCE
-  Purpose: Global channel-level opt-in/out for a user
-  Fields:
-    - UserId (int)
-    - ChannelOptIn (Dictionary<Channel, bool>)
-  Example: User has globally disabled SMS — no SMS regardless of subscriptions
 
 MESSAGETEMPLATE
   Purpose: Channel-specific template with placeholders
@@ -124,11 +128,23 @@ MESSAGETEMPLATE
 6. IMPORTANT ENUMS
 ================================================================================
 
-NotificationType
+NotificationCategory (what user subscribes to)
+  - OrderUpdates   → covers OrderPlaced, OrderShipped, OrderDelivered, OrderCancelled
+  - PaymentAlerts  → covers PaymentFailed, PaymentSuccess
+  - Otp            → covers Otp
+
+NotificationType (specific event fired by upstream service)
   - OrderPlaced
+  - OrderShipped
   - OrderDelivered
+  - OrderCancelled
   - PaymentFailed
+  - PaymentSuccess
   - Otp
+
+NotificationCategoryMap (static helper)
+  - Maps each NotificationType → its parent NotificationCategory
+  - Used by UserPreferenceService to check subscription
 
 Channel
   - Email
@@ -149,7 +165,36 @@ NotificationStatus
   - Failed
 
 ================================================================================
-7. SERVICES AND RESPONSIBILITIES
+7. SUBSCRIPTION vs PREFERENCE — KEY DISTINCTION
+================================================================================
+
+SUBSCRIPTION = "Which topics/categories do I want?"
+  - User subscribes to OrderUpdates → gets ALL order events (placed, shipped, delivered, cancelled)
+  - This is category-level opt-in
+  - One subscription covers the entire lifecycle of a topic
+  - Real-world analogy: Amazon "Order Updates" toggle in notification settings
+
+PREFERENCE = "Which channels do I want to receive them on?"
+  - User enables Email + Push, disables SMS
+  - This is channel-level opt-in (global across all categories)
+  - Real-world analogy: Amazon "Email", "SMS", "Push" toggles in notification settings
+
+TWO-LEVEL FILTER in UserPreferenceService.GetActiveChannels():
+  Level 1 (Subscription): Is user subscribed to the category this event belongs to?
+    → OrderDelivered belongs to OrderUpdates → is user subscribed to OrderUpdates?
+  Level 2 (Preference):   Which channels has the user globally enabled?
+    → Return only channels where ChannelOptIn = true
+
+Example:
+  User subscribed to OrderUpdates? YES
+  User's enabled channels: Email=true, SMS=true, Push=false, InApp=true
+  → Send via Email, SMS, InApp (not Push)
+
+  User subscribed to PaymentAlerts? NO
+  → Don't send at all, regardless of channel preferences
+
+================================================================================
+8. SERVICES AND RESPONSIBILITIES
 ================================================================================
 
 NOTIFICATIONSERVICE (Orchestrator)
@@ -168,11 +213,11 @@ USERPREFERENCESERVICE
   Responsibility: Two-level filtering for active channels
   Methods:
     - GetActiveChannels(user, notificationType)
-      • Check: subscription exists AND IsActive=true
-      • Check: global channel opt-in = true
-      • Return intersection
-    - Subscribe(userId, type, channel)
-    - Unsubscribe(userId, type, channel)
+      • Map notificationType → category via NotificationCategoryMap
+      • Check: user has active subscription for that category
+      • Return channels where ChannelOptIn = true
+    - Subscribe(userId, category)
+    - Unsubscribe(userId, category)
     - UpdateChannelOptIn(userId, channel, optIn)
 
 TEMPLATERENDERER
@@ -194,7 +239,7 @@ CHANNELDISPATCHER
         - Attempt send (with retry loop)
         - Update status via StatusTracker
 
-STATUSTRACKER (State machine)
+STATUSTACKER (State machine)
   Responsibility: Enforce valid status transitions
   Methods:
     - Transition(notificationId, newStatus)
@@ -219,7 +264,7 @@ RETRYPOLICY
     - Delay = BaseDelay * 2^retryCount
 
 ================================================================================
-8. INTERFACES
+9. INTERFACES
 ================================================================================
 
 INotificationChannel
@@ -250,15 +295,15 @@ IUserPreferenceService
   Why: Centralizes preference logic. Two-level filtering.
   Methods:
     - IEnumerable<Channel> GetActiveChannels(user, notificationType)
-    - void Subscribe(userId, type, channel)
-    - void Unsubscribe(userId, type, channel)
+    - void Subscribe(userId, category)
+    - void Unsubscribe(userId, category)
     - void UpdateChannelOptIn(userId, channel, optIn)
 
 IUserRepository, INotificationRepository, ITemplateRepository
   Why: Abstraction for data access. Easy to swap in-memory for DB.
 
 ================================================================================
-9. DESIGN PATTERNS USED
+10. DESIGN PATTERNS USED
 ================================================================================
 
 STRATEGY PATTERN
@@ -292,7 +337,7 @@ STATE PATTERN
     Transition(id, newStatus) validates before updating
 
 ================================================================================
-10. WHY OBSERVER PATTERN IS NOT PREFERRED
+11. WHY OBSERVER PATTERN IS NOT PREFERRED
 ================================================================================
 
 Observer Pattern:
@@ -315,7 +360,7 @@ Better approach: Orchestrator (NotificationService) controls the flow
   ✓ Centralized template rendering
 
 ================================================================================
-11. END-TO-END FLOW: ORDER_DELIVERED via EMAIL
+12. END-TO-END FLOW: ORDER_DELIVERED via EMAIL
 ================================================================================
 
 Step 1: Event Source
@@ -330,16 +375,17 @@ Step 1: Event Source
 Step 2: NotificationService — Fetch & Filter
   - Fetch User 1 from repository
   - Call preferenceService.GetActiveChannels(user, OrderDelivered)
-    • Check subscriptions: User 1 subscribed to OrderDelivered on Email? YES
-    • Check preference: User 1 has Email opt-in? YES
-    • Return [Channel.Email]
+    • Map OrderDelivered → NotificationCategory.OrderUpdates
+    • Check subscription: User 1 subscribed to OrderUpdates? YES
+    • Check preferences: Email=true, SMS=true, Push=false, InApp=true
+    • Return [Email, SMS, InApp]
 
-Step 3: Create Notification
+Step 3: Create Notification (one per active channel)
   notification = new Notification
   {
     UserId = 1,
     NotificationType = OrderDelivered,
-    Channel = Email,
+    Channel = Email,   // repeated for SMS, InApp
     Payload = { "name": "Alice", "orderId": "ORD-9921", "date": "2025-07-10" },
     Status = Queued
   }
@@ -373,7 +419,7 @@ Step 7: Status Query
   - Returns: NotificationStatus.Sent
 
 ================================================================================
-12. RETRY MECHANISM — EXPONENTIAL BACKOFF
+13. RETRY MECHANISM — EXPONENTIAL BACKOFF
 ================================================================================
 
 Scenario: Email vendor is temporarily down
@@ -415,7 +461,7 @@ Why exponential backoff?
   - Interview note: "In production, you'd add jitter to prevent thundering herd"
 
 ================================================================================
-13. EXTENSIBILITY: ADDING WHATSAPP CHANNEL
+14. EXTENSIBILITY: ADDING WHATSAPP CHANNEL
 ================================================================================
 
 Current state:
@@ -470,7 +516,7 @@ Changes required:
 This is Open/Closed Principle: open for extension, closed for modification.
 
 ================================================================================
-14. DATABASE TABLES
+15. DATABASE TABLES
 ================================================================================
 
 USERS
@@ -484,11 +530,10 @@ USERS
 SUBSCRIPTIONS
   - id (PK)
   - user_id (FK)
-  - notification_type (enum)
-  - channel (enum)
+  - category (enum: OrderUpdates, PaymentAlerts, Otp)
   - is_active (bool)
   - created_at
-  - Unique constraint: (user_id, notification_type, channel)
+  - Unique constraint: (user_id, category)
 
 NOTIFICATION_PREFERENCES
   - user_id (PK, FK)
@@ -519,7 +564,7 @@ MESSAGE_TEMPLATES
   - Unique constraint: (notification_type, channel)
 
 ================================================================================
-15. IMPORTANT APIs
+16. IMPORTANT APIs
 ================================================================================
 
 POST /notifications/send
@@ -540,8 +585,7 @@ POST /subscriptions
   Request:
     {
       "userId": 1,
-      "notificationType": "OrderDelivered",
-      "channel": "Email"
+      "category": "OrderUpdates"
     }
   Response: { "subscriptionId": 42 }
 
@@ -568,7 +612,7 @@ GET /preferences/{userId}
     }
 
 ================================================================================
-16. INTERVIEW DISCUSSION POINTS
+17. INTERVIEW DISCUSSION POINTS
 ================================================================================
 
 TRADEOFFS
@@ -639,70 +683,8 @@ Interview answer: "The queue-based architecture naturally scales. Add more
 dispatcher instances, they all pull from the same queue. For templates, we'd
 cache. For database, we'd shard by user_id."
 
-ASYNC QUEUE DISCUSSION
-
-Why async?
-  - Vendor calls are I/O bound (network latency)
-  - Async allows dispatcher to handle multiple notifications concurrently
-  - Better resource utilization
-
-Example:
-  // Sync (blocks)
-  foreach (var notification in queue)
-    channel.Send(notification);  // waits for vendor response
-
-  // Async (concurrent)
-  var tasks = queue.Select(n => channel.SendAsync(n));
-  await Task.WhenAll(tasks);  // all in parallel
-
-Interview answer: "Async is crucial for I/O-bound operations. We can dispatch
-100 emails concurrently instead of sequentially. Huge throughput improvement."
-
-WHY QUEUE IS USEFUL
-
-1. Decoupling
-   - Rendering doesn't wait for dispatch
-   - Dispatch doesn't wait for rendering
-
-2. Resilience
-   - If dispatcher crashes, queue persists (with persistent queue)
-   - Retry logic can be applied
-
-3. Backpressure
-   - If vendor is slow, queue builds up
-   - Dispatcher can process at its own pace
-   - Prevents overwhelming vendor
-
-4. Monitoring
-   - Queue depth = system health
-   - If queue grows, dispatcher is slow
-
-Interview answer: "Queue is the backbone. It decouples components, provides
-resilience, and allows independent scaling."
-
-COUPLING VS DECOUPLING
-
-Tight coupling (bad):
-  NotificationService → EmailChannel → EmailVendor
-  If EmailVendor changes, NotificationService breaks
-
-Loose coupling (good):
-  NotificationService → INotificationChannel → EmailChannel → EmailVendor
-  If EmailVendor changes, only EmailChannel breaks
-  If we add WhatsApp, NotificationService doesn't change
-
-How we achieved it:
-  - Interfaces for all major components
-  - Factory for channel creation
-  - Dependency injection
-  - Queue for async decoupling
-
-Interview answer: "We use interfaces and dependency injection to decouple.
-NotificationService doesn't know about concrete channels. Factory handles
-creation. Queue decouples rendering from dispatch."
-
 ================================================================================
-17. COMMON INTERVIEW QUESTIONS
+18. COMMON INTERVIEW QUESTIONS
 ================================================================================
 
 Q1: How do you handle duplicate notifications?
@@ -781,7 +763,7 @@ A: Yes. Create channel class, register in factory, add templates.
    pattern and Factory pattern."
 
 ================================================================================
-18. FINAL SUMMARY — REVISION CHECKLIST
+19. FINAL SUMMARY — REVISION CHECKLIST
 ================================================================================
 
 ARCHITECTURE
@@ -810,9 +792,17 @@ INTERFACES
   ☐ IRetryPolicy: retry strategy
   ☐ IUserPreferenceService: preference logic
 
+SUBSCRIPTION vs PREFERENCE
+  ☐ Subscription = category-level opt-in (OrderUpdates, PaymentAlerts, Otp)
+  ☐ Preference = channel-level opt-in (Email, SMS, Push, InApp)
+  ☐ One subscription covers all event types in a category
+  ☐ Preference controls which channels to use across all categories
+
 FLOW
   ☐ Event → NotificationService.Send()
-  ☐ Filter active channels (subscription + preference)
+  ☐ Map NotificationType → NotificationCategory
+  ☐ Check subscription for that category
+  ☐ Return channels where ChannelOptIn = true
   ☐ Create Notification (Status = QUEUED)
   ☐ Render template (replace placeholders)
   ☐ Enqueue to message queue
@@ -821,6 +811,7 @@ FLOW
 
 EXTENSIBILITY
   ☐ Add new channel: create class, register in factory, add templates
+  ☐ Add new category: add enum value, update CategoryMap
   ☐ Zero changes to existing code
   ☐ Open/Closed Principle
 
@@ -862,7 +853,7 @@ QUICK REFERENCE: 60-90 MINUTE INTERVIEW FLOW
   - Explain why queue is useful
 
 15-30 min: Detailed design
-  - Entities: User, Subscription, Notification, Preference, Template
+  - Entities: User, Subscription (category-based), Notification, Preference, Template
   - Services: NotificationService, PreferenceService, TemplateRenderer
   - Interfaces: INotificationChannel, ITemplateRenderer, IMessageQueue
   - Design patterns: Strategy, Factory, State

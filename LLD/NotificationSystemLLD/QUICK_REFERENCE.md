@@ -8,17 +8,31 @@ CORE FLOW (30 seconds)
 
 KEY ENTITIES (1 minute)
   User: id, email, phone, subscriptions, preference
-  Subscription: userId, notificationType, channel, isActive
+  Subscription: userId, category (OrderUpdates/PaymentAlerts/Otp), isActive
   Notification: userId, type, channel, payload, status, retryCount
-  Preference: userId, channelOptIn (dict)
-  Template: templateId, type, channel, subject, body
+  Preference: userId, channelOptIn (dict: Email/SMS/Push/InApp → bool)
+  Template: templateId, notificationType, channel, subject, body
+
+SUBSCRIPTION vs PREFERENCE (1 minute)
+  Subscription = "Which topics do I want?" (category-level)
+    → Subscribe to OrderUpdates → get ALL order events automatically
+    → One subscription covers the entire topic lifecycle
+  Preference = "Which channels do I want?" (channel-level, global)
+    → Enable Email + Push, disable SMS → applies to ALL subscribed categories
+
+TWO-LEVEL FILTER (1 minute)
+  Level 1: Is user subscribed to the category this event belongs to?
+    → OrderDelivered → OrderUpdates → subscribed? YES/NO
+  Level 2: Which channels has user globally enabled?
+    → Return channels where ChannelOptIn = true
+  Only send if Level 1 passes; channels from Level 2 determine where.
 
 SERVICES (2 minutes)
   NotificationService: Send(userId, type, priority, payload)
     → Get user → Filter channels → Create notifications → Render → Enqueue
   
-  UserPreferenceService: GetActiveChannels(user, type)
-    → Check subscription AND global opt-in
+  UserPreferenceService: GetActiveChannels(user, notificationType)
+    → Map type → category → check subscription → return enabled channels
   
   TemplateRenderer: Render(notification)
     → Fetch template → Replace {{placeholders}} → Store rendered body
@@ -48,14 +62,15 @@ WHY NOT OBSERVER (30 seconds)
 
 END-TO-END: ORDER_DELIVERED via EMAIL (2 minutes)
   1. Order Service calls notificationService.Send(userId=1, OrderDelivered, High, payload)
-  2. NotificationService filters: User 1 subscribed to OrderDelivered on Email? YES
-  3. Create Notification (Status=QUEUED)
-  4. TemplateRenderer: fetch template, replace {{name}}, {{orderId}}, {{date}}
-  5. Save to repo, enqueue
-  6. ChannelDispatcher dequeues, gets EmailChannel from factory
-  7. EmailChannel.SendAsync() calls EmailVendor
-  8. StatusTracker.Transition(id, SENT)
-  9. Client queries GetStatus(id) → SENT
+  2. Map OrderDelivered → OrderUpdates category
+  3. User subscribed to OrderUpdates? YES
+  4. Enabled channels: Email=true, SMS=true, Push=false, InApp=true → [Email, SMS, InApp]
+  5. Create Notification per channel (Status=QUEUED)
+  6. TemplateRenderer: fetch template, replace {{name}}, {{orderId}}, {{date}}
+  7. Save to repo, enqueue
+  8. ChannelDispatcher dequeues, gets EmailChannel from factory
+  9. EmailChannel.SendAsync() calls EmailVendor
+  10. StatusTracker.Transition(id, SENT)
 
 RETRY MECHANISM (1 minute)
   Exponential backoff: delay = 2s * 2^retryCount
@@ -77,11 +92,11 @@ INTERFACES (1 minute)
   ITemplateRenderer: Render(notification) → string
   IMessageQueue: Enqueue, Dequeue, IsEmpty
   IRetryPolicy: ShouldRetry(count), GetDelay(count)
-  IUserPreferenceService: GetActiveChannels, Subscribe, Unsubscribe, UpdateOptIn
+  IUserPreferenceService: GetActiveChannels, Subscribe(category), Unsubscribe(category), UpdateOptIn
 
 DATABASE TABLES (1 minute)
   users: id, name, email, phone, device_token
-  subscriptions: id, user_id, notification_type, channel, is_active
+  subscriptions: id, user_id, category, is_active   ← category, not per-type
   notification_preferences: user_id, channel, opt_in
   notifications: id, user_id, type, channel, status, rendered_body, retry_count
   message_templates: template_id, type, channel, subject, body
@@ -151,6 +166,7 @@ INTERVIEW FLOW (60-90 min)
 REVISION CHECKLIST
   ☐ Can explain core flow in 30 seconds
   ☐ Can draw architecture diagram
+  ☐ Can explain subscription (category) vs preference (channel)
   ☐ Can explain 3 design patterns
   ☐ Can walk through ORDER_DELIVERED example
   ☐ Can explain retry mechanism
