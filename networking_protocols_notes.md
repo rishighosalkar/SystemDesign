@@ -172,6 +172,7 @@ Understanding networking protocols is fundamental for system design interviews. 
 ### Purpose
 - Application layer protocol defining request/response communication between clients and servers
 - Foundation for web services
+- HTTP is a stateless, application-layer protocol that sends data in plaintext. This means any information—such as form inputs, passwords, or credit card details—can be intercepted and read by anyone monitoring the connection. It operates over port 80 and is suitable for non-sensitive, public content. While it offers lower latency for repeated requests and reduced CPU usage, it lacks encryption, authentication, and integrity checks, making it vulnerable to man-in-the-middle (MITM) attacks and data tampering
 
 ### Key Characteristics
 
