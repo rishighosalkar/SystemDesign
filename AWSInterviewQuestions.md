@@ -1271,6 +1271,7 @@ Answer:
 
 **AWS Lambda Dead-Letter Queue** (DLQ) is a storage mechanism that saves events failing to process after all retry attempts during asynchronous invocations.
 
+Both of them are triggered by async invocations i.e. by SQS, SNS, Eventbridge
 **Dead Letter Queues (DLQ):**
 - Configured on the Lambda function itself
 - Captures **failed** asynchronous invocations (after all retries exhausted — default 2 retries)
@@ -1527,7 +1528,24 @@ Occurs when too many requests target the same partition key value (e.g., using `
 
 ---
 
-**Q52. Explain DynamoDB read consistency — eventually consistent vs strongly consistent reads.**
+**Q52. Explain DynamoDB RCU and WCU and read consistency — eventually consistent vs strongly consistent reads.**
+
+In Amazon DynamoDB, read and write capacity measure the amount of data your application can read or write per second, controlled through Read Capacity Units (RCUs) and Write Capacity Units (WCUs).
+
+**Read Capacity Units (RCUs)**
+
+An RCU measures read throughput per second.
+• Strongly Consistent Read: 1 RCU allows one read per second for an item up to 4 KB in size.
+• Eventually Consistent Read: 1 RCU allows two reads per second for an item up to 4 KB in size (half the cost of a strongly consistent read).
+• Transactional Read: Consumes 2 RCUs per 4 KB per second.
+• Rounding: Item sizes round up to the nearest 4 KB chunk. For example, reading a 6 KB item strongly consistently requires 2 RCUs (rounded up to two 4 KB blocks)
+
+**Write Capacity Units (WCUs)**
+
+A WCU measures write throughput per second.
+• Standard Write: 1 WCU allows one write per second for an item up to 1 KB in size.
+• Transactional Write: Consumes 2 WCUs per 1 KB per second.
+• Rounding: Item sizes round up to the nearest 1 KB chunk. For example, writing a 1.5 KB item consumes 2 WCUs
 
 **Eventually Consistent Reads (default):**
 - DynamoDB returns data from any of the replica nodes.
@@ -1585,6 +1603,10 @@ Occurs when too many requests target the same partition key value (e.g., using `
 ---
 
 **Q55. What is the difference between DynamoDB on-demand and provisioned capacity modes?**
+
+**Provisioned Mode:** You specify the exact number of RCUs and WCUs you need in advance. You are billed hourly for the capacity you set, regardless of how much you use. It supports AWS Auto Scaling to adjust units automatically.
+
+**On-Demand Mode:** A serverless pay-per-request model where DynamoDB scales up and down automatically. You do not plan or provision capacity; instead, you pay strictly for the number of read and write request units consumed.
 
 | | On-Demand | Provisioned |
 |---|---|---|
