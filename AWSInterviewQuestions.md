@@ -1267,6 +1267,10 @@ Answer:
 
 Answer:
 
+**Lambda Destinations** is a feature that automatically routes the execution results of asynchronous invocations to downstream AWS services without requiring you to write custom routing or error-handling code inside your function.
+
+**AWS Lambda Dead-Letter Queue** (DLQ) is a storage mechanism that saves events failing to process after all retry attempts during asynchronous invocations.
+
 **Dead Letter Queues (DLQ):**
 - Configured on the Lambda function itself
 - Captures **failed** asynchronous invocations (after all retries exhausted — default 2 retries)
